@@ -1,0 +1,1 @@
+timestamp,target_column,cv_strategy,n_splits,n_train_rows,n_test_rows,n_features,rmse_mean,rmse_std,mae_mean,r2_mean,model_name,submission_path
