@@ -63,7 +63,7 @@ def configure_logging() -> None:
 
 
 def ensure_runtime_directories() -> None:
-    for path in (CACHE_DIR, LOGS_DIR, OUTPUTS_DIR, SUBMISSIONS_DIR):
+    for path in (CACHE_DIR, LOGS_DIR, OUTPUTS_DIR, SUBMISSIONS_DIR, DATA_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -98,6 +98,19 @@ def validate_extracted_dataset(data_dir: Path = DATA_DIR) -> None:
     for name, path in paths.items():
         if path.stat().st_size == 0:
             raise ValueError(f"Extracted dataset file '{name}' is empty: '{path}'.")
+
+
+def validate_dataset_structure(data_dir: Path = DATA_DIR, root_dir: Path = ROOT) -> dict[str, object]:
+    paths = validate_data_dir(data_dir)
+    root_csv_files = [name for name in EXPECTED_FILES if (root_dir / name).exists()]
+    nested_csv_files = [name for name in EXPECTED_FILES if not (data_dir / name).is_file()]
+    return {
+        "data_dir": str(data_dir),
+        "expected_files": list(EXPECTED_FILES),
+        "root_csv_files": root_csv_files,
+        "nested_csv_files": nested_csv_files,
+        "all_expected_files_present": not root_csv_files and not nested_csv_files and all(path.is_file() for path in paths.values()),
+    }
 
 
 def download_with_gdown(url: str, destination: Path) -> None:
@@ -154,6 +167,47 @@ def ensure_zip_downloaded(url: str = DATA_URL, destination: Path = DATA_ZIP_PATH
     return destination
 
 
+def move_root_csv_files_into_data_dir(root_dir: Path = ROOT, data_dir: Path = DATA_DIR) -> list[Path]:
+    moved_paths: list[Path] = []
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for name in EXPECTED_FILES:
+        source = root_dir / name
+        target = data_dir / name
+        if not source.exists():
+            continue
+        if target.exists():
+            logger.info("Removing duplicate root-level dataset file after data_dir copy exists: %s", source)
+            source.unlink()
+            continue
+        logger.info("Moving root-level dataset file into data directory: %s -> %s", source, target)
+        shutil.move(str(source), str(target))
+        moved_paths.append(target)
+    return moved_paths
+
+
+def normalize_data_layout(root_dir: Path = ROOT, data_dir: Path = DATA_DIR) -> dict[str, list[str]]:
+    ensure_runtime_directories()
+    moved: list[str] = []
+    removed_duplicates: list[str] = []
+
+    for name in EXPECTED_FILES:
+        source = root_dir / name
+        target = data_dir / name
+        if not source.exists():
+            continue
+        if target.exists():
+            source.unlink()
+            removed_duplicates.append(str(source))
+            continue
+        shutil.move(str(source), str(target))
+        moved.append(str(target))
+
+    return {
+        "moved": moved,
+        "removed_duplicates": removed_duplicates,
+    }
+
+
 def extract_dataset(zip_path: Path = DATA_ZIP_PATH, data_dir: Path = DATA_DIR) -> None:
     logger.info("Extracting dataset: %s -> %s", zip_path, data_dir)
     try:
@@ -161,6 +215,10 @@ def extract_dataset(zip_path: Path = DATA_ZIP_PATH, data_dir: Path = DATA_DIR) -
             archive.extractall(ROOT)
     except zipfile.BadZipFile as exc:
         raise RuntimeError(f"Downloaded zip file is invalid: '{zip_path}'.") from exc
+
+    normalization = normalize_data_layout(ROOT, data_dir)
+    if normalization["moved"] or normalization["removed_duplicates"]:
+        logger.info("Normalized dataset layout after extraction: %s", normalization)
 
     if not data_dir.exists():
         raise FileNotFoundError(
@@ -170,13 +228,21 @@ def extract_dataset(zip_path: Path = DATA_ZIP_PATH, data_dir: Path = DATA_DIR) -
 
 
 def ensure_dataset_available(data_dir: Path = DATA_DIR, url: str = DATA_URL) -> None:
-    if data_dir.exists():
-        logger.info("Dataset directory already exists. Skipping download and extraction: %s", data_dir)
+    normalization = normalize_data_layout(ROOT, data_dir)
+    if normalization["moved"] or normalization["removed_duplicates"]:
+        logger.info("Normalized dataset layout before validation: %s", normalization)
+
+    try:
         validate_extracted_dataset(data_dir)
         return
+    except (FileNotFoundError, ValueError):
+        pass
 
     zip_path = ensure_zip_downloaded(url=url, destination=DATA_ZIP_PATH)
     extract_dataset(zip_path=zip_path, data_dir=data_dir)
+    normalization = normalize_data_layout(ROOT, data_dir)
+    if normalization["moved"] or normalization["removed_duplicates"]:
+        logger.info("Normalized dataset layout after validation: %s", normalization)
     validate_extracted_dataset(data_dir)
     logger.info("Dataset bootstrap completed successfully.")
 
@@ -318,6 +384,7 @@ def main() -> None:
     configure_logging()
     try:
         prepared = load_prepared_data()
+        structure = validate_dataset_structure()
     except Exception as exc:
         logger.exception("prepare.py failed: %s", exc)
         raise SystemExit(1) from exc
@@ -326,6 +393,7 @@ def main() -> None:
     logger.info("Data preparation check completed.")
     for key, value in summary.items():
         logger.info("%s: %s", key, value)
+    logger.info("dataset_structure: %s", structure)
 
 
 if __name__ == "__main__":
