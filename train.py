@@ -1,76 +1,105 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
-from prepare import LOGS_DIR, SUBMISSIONS_DIR, ensure_runtime_directories, iter_cv_splits, load_prepared_data
+try:
+    import lightgbm as lgb
+    from lightgbm import LGBMRegressor
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "lightgbm is required for this baseline. "
+        "Install it with 'pip install lightgbm' or './.venv/bin/pip install lightgbm'."
+    ) from exc
+
+from prepare import (
+    LOGS_DIR,
+    OUTPUTS_DIR,
+    SUBMISSIONS_DIR,
+    ensure_runtime_directories,
+    iter_cv_splits,
+    load_prepared_data,
+)
 
 
 @dataclass(frozen=True)
 class ExperimentConfig:
+    experiment_name: str = "baseline_lightgbm_v1"
     random_state: int = 42
+    n_estimators: int = 1000
     learning_rate: float = 0.05
-    max_depth: int = 6
-    max_iter: int = 300
-    min_samples_leaf: int = 20
-    l2_regularization: float = 0.0
+    max_depth: int = 7
+    num_leaves: int = 63
+    subsample: float = 0.8
+    colsample_bytree: float = 0.8
+    reg_alpha: float = 0.1
+    reg_lambda: float = 0.1
+    early_stopping_rounds: int = 50
+    log_evaluation_period: int = 100
 
 
-def build_model(config: ExperimentConfig, numeric_columns: list[str], categorical_columns: list[str]) -> Pipeline:
-    transformers: list[tuple[str, Pipeline, list[str]]] = []
+def build_preprocessor(numeric_columns: list[str], categorical_columns: list[str]) -> ColumnTransformer:
+    transformers: list[tuple[str, object, list[str]]] = []
 
     if numeric_columns:
-        numeric_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="median")),
-            ]
+        transformers.append(
+            (
+                "numeric",
+                SimpleImputer(strategy="median"),
+                numeric_columns,
+            )
         )
-        transformers.append(("numeric", numeric_pipeline, numeric_columns))
 
     if categorical_columns:
-        categorical_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                (
-                    "encoder",
-                    OrdinalEncoder(
-                        handle_unknown="use_encoded_value",
-                        unknown_value=-1,
-                        encoded_missing_value=-1,
-                    ),
+        transformers.append(
+            (
+                "categorical",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        (
+                            "encoder",
+                            OrdinalEncoder(
+                                handle_unknown="use_encoded_value",
+                                unknown_value=-1,
+                                encoded_missing_value=-1,
+                            ),
+                        ),
+                    ]
                 ),
-            ]
+                categorical_columns,
+            )
         )
-        transformers.append(("categorical", categorical_pipeline, categorical_columns))
 
-    preprocessor = ColumnTransformer(
+    return ColumnTransformer(
         transformers=transformers,
         remainder="drop",
         verbose_feature_names_out=False,
     )
-    model = HistGradientBoostingRegressor(
+
+
+def build_model(config: ExperimentConfig) -> LGBMRegressor:
+    return LGBMRegressor(
+        n_estimators=config.n_estimators,
         learning_rate=config.learning_rate,
         max_depth=config.max_depth,
-        max_iter=config.max_iter,
-        min_samples_leaf=config.min_samples_leaf,
-        l2_regularization=config.l2_regularization,
+        num_leaves=config.num_leaves,
+        subsample=config.subsample,
+        colsample_bytree=config.colsample_bytree,
+        reg_alpha=config.reg_alpha,
+        reg_lambda=config.reg_lambda,
         random_state=config.random_state,
-    )
-    return Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("model", model),
-        ]
+        verbose=-1,
     )
 
 
@@ -91,23 +120,112 @@ def append_results_log(row: dict[str, object]) -> Path:
     return results_path
 
 
+def get_feature_names(preprocessor: ColumnTransformer) -> list[str]:
+    return preprocessor.get_feature_names_out().tolist()
+
+
+def create_experiment_dir(config: ExperimentConfig, timestamp: str) -> Path:
+    experiment_dir = OUTPUTS_DIR / "experiments" / f"{timestamp}_{config.experiment_name}"
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    return experiment_dir
+
+
+def save_oof_predictions(
+    prepared,
+    predictions: pd.Series,
+    experiment_dir: Path,
+) -> Path:
+    oof_frame = pd.DataFrame(
+        {
+            "row_index": prepared.X_train.index,
+            "prediction": predictions.loc[prepared.X_train.index].to_numpy(),
+            "target": prepared.y.loc[prepared.X_train.index].to_numpy(),
+        }
+    )
+    if "ID" in prepared.train_df.columns:
+        oof_frame.insert(1, "ID", prepared.train_df.loc[prepared.X_train.index, "ID"].to_numpy())
+    oof_frame["residual"] = oof_frame["target"] - oof_frame["prediction"]
+    output_path = experiment_dir / "oof_predictions.csv"
+    oof_frame.to_csv(output_path, index=False)
+    return output_path
+
+
+def save_feature_importance(fold_importances: list[pd.DataFrame], experiment_dir: Path) -> Path | None:
+    if not fold_importances:
+        return None
+
+    all_importances = pd.concat(fold_importances, ignore_index=True)
+    summary = (
+        all_importances.groupby("feature_name", as_index=False)["importance"]
+        .mean()
+        .sort_values("importance", ascending=False)
+    )
+    output_path = experiment_dir / "feature_importance.csv"
+    summary.to_csv(output_path, index=False)
+    return output_path
+
+
+def save_experiment_summary(
+    config: ExperimentConfig,
+    fold_metrics: list[dict[str, float]],
+    results_row: dict[str, object],
+    experiment_dir: Path,
+) -> Path:
+    summary_path = experiment_dir / "metrics.json"
+    payload = {
+        "config": asdict(config),
+        "fold_metrics": fold_metrics,
+        "summary": results_row,
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return summary_path
+
+
 def main() -> None:
     ensure_runtime_directories()
     prepared = load_prepared_data()
     config = ExperimentConfig()
 
+    oof_predictions = pd.Series(index=prepared.X_train.index, dtype=float)
     fold_metrics: list[dict[str, float]] = []
+    fold_importances: list[pd.DataFrame] = []
+
     for fold_idx, train_idx, valid_idx in iter_cv_splits(prepared):
-        model = build_model(config, prepared.numeric_columns, prepared.categorical_columns)
         X_fold_train = prepared.X_train.loc[train_idx]
         y_fold_train = prepared.y.loc[train_idx]
         X_fold_valid = prepared.X_train.loc[valid_idx]
         y_fold_valid = prepared.y.loc[valid_idx]
 
-        model.fit(X_fold_train, y_fold_train)
-        fold_pred = model.predict(X_fold_valid)
+        preprocessor = build_preprocessor(prepared.numeric_columns, prepared.categorical_columns)
+        X_fold_train_processed = preprocessor.fit_transform(X_fold_train)
+        X_fold_valid_processed = preprocessor.transform(X_fold_valid)
+        feature_names = get_feature_names(preprocessor)
+
+        model = build_model(config)
+        model.fit(
+            X_fold_train_processed,
+            y_fold_train,
+            eval_set=[(X_fold_valid_processed, y_fold_valid)],
+            eval_metric="l1",
+            callbacks=[
+                lgb.early_stopping(config.early_stopping_rounds),
+                lgb.log_evaluation(config.log_evaluation_period),
+            ],
+        )
+
+        fold_pred = model.predict(X_fold_valid_processed, num_iteration=model.best_iteration_)
+        oof_predictions.loc[valid_idx] = fold_pred
         metrics = evaluate_predictions(y_fold_valid, fold_pred)
         fold_metrics.append(metrics)
+        fold_importances.append(
+            pd.DataFrame(
+                {
+                    "fold": fold_idx,
+                    "feature_name": feature_names,
+                    "importance": model.feature_importances_,
+                }
+            )
+        )
         print(
             f"Fold {fold_idx}: "
             f"RMSE={metrics['rmse']:.6f} "
@@ -118,22 +236,31 @@ def main() -> None:
     rmse_scores = [metric["rmse"] for metric in fold_metrics]
     mae_scores = [metric["mae"] for metric in fold_metrics]
     r2_scores = [metric["r2"] for metric in fold_metrics]
+    oof_mae = float(mean_absolute_error(prepared.y.loc[oof_predictions.index], oof_predictions.loc[prepared.y.index]))
     print(
         f"CV Summary: RMSE={np.mean(rmse_scores):.6f}±{np.std(rmse_scores):.6f} "
         f"MAE={np.mean(mae_scores):.6f} "
-        f"R2={np.mean(r2_scores):.6f}"
+        f"R2={np.mean(r2_scores):.6f} "
+        f"OOF_MAE={oof_mae:.6f}"
     )
 
-    final_model = build_model(config, prepared.numeric_columns, prepared.categorical_columns)
-    final_model.fit(prepared.X_train, prepared.y)
-    test_pred = final_model.predict(prepared.X_test)
+    final_preprocessor = build_preprocessor(prepared.numeric_columns, prepared.categorical_columns)
+    X_train_processed = final_preprocessor.fit_transform(prepared.X_train)
+    X_test_processed = final_preprocessor.transform(prepared.X_test)
+    final_model = build_model(config)
+    final_model.fit(X_train_processed, prepared.y)
+    test_pred = final_model.predict(X_test_processed)
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = create_experiment_dir(config, timestamp)
     submission = prepared.submission_df.copy()
     submission[prepared.target_column] = test_pred
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    submission_path = SUBMISSIONS_DIR / f"submission_{timestamp}.csv"
+    submission_path = SUBMISSIONS_DIR / f"submission_{config.experiment_name}_{timestamp}.csv"
     submission.to_csv(submission_path, index=False)
     print(f"Saved submission: {submission_path}")
+
+    oof_path = save_oof_predictions(prepared, oof_predictions, experiment_dir)
+    importance_path = save_feature_importance(fold_importances, experiment_dir)
 
     results_row = {
         "timestamp": timestamp,
@@ -147,11 +274,17 @@ def main() -> None:
         "rmse_std": float(np.std(rmse_scores)),
         "mae_mean": float(np.mean(mae_scores)),
         "r2_mean": float(np.mean(r2_scores)),
-        "model_name": "HistGradientBoostingRegressor",
+        "model_name": config.experiment_name,
         "submission_path": str(submission_path.relative_to(Path.cwd())),
     }
+    summary_path = save_experiment_summary(config, fold_metrics, results_row, experiment_dir)
     results_path = append_results_log(results_row)
+
     print(f"Updated log: {results_path}")
+    print(f"Saved OOF predictions: {oof_path}")
+    if importance_path is not None:
+        print(f"Saved feature importance: {importance_path}")
+    print(f"Saved experiment summary: {summary_path}")
 
 
 if __name__ == "__main__":
