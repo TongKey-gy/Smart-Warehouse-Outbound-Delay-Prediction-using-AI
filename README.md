@@ -13,9 +13,11 @@
 ## 데이터 위치
 
 원본 데이터는 GitHub에 포함하지 않습니다.
-사용자는 아래 구조로 로컬에 데이터를 가지고 있다고 가정합니다.
+`prepare.py`를 실행하면 `open/` 폴더가 없을 때 Google Drive 공유 링크에서 `open.zip`을 자동 다운로드하고 압축을 해제합니다.
+이미 `open/` 폴더가 있으면 다운로드와 압축 해제를 건너뜁니다.
 
 ```text
+open.zip
 open/
 ├── train.csv
 ├── test.csv
@@ -47,6 +49,8 @@ open/
 고정 데이터 준비 레이어입니다.
 
 - `open/` 데이터 존재 여부 검사
+- `open/` 폴더가 없으면 Google Drive에서 `open.zip` 자동 다운로드
+- `open.zip` 압축 해제 및 expected 파일 검증
 - `train.csv`, `test.csv`, `layout_info.csv`, `sample_submission.csv` 로드
 - `layout_info.csv` 자동 병합
 - 타깃 컬럼 자동 탐지
@@ -76,6 +80,20 @@ autoresearch 루프용 실험 규칙입니다.
 
 가상환경이 활성화된 상태에서 아래처럼 실행합니다.
 
+먼저 `gdown`이 없으면 설치하세요.
+
+```bash
+pip install gdown
+```
+
+또는 현재 작업 환경의 가상환경을 쓴다면:
+
+```bash
+./.venv/bin/pip install gdown
+```
+
+그 다음 아래처럼 실행합니다.
+
 ```bash
 python prepare.py
 python train.py
@@ -87,6 +105,8 @@ python train.py
 ./.venv/bin/python prepare.py
 ./.venv/bin/python train.py
 ```
+
+기본 Google Drive 링크를 바꾸고 싶으면 `OPEN_DATA_URL` 환경변수를 사용할 수 있습니다.
 
 ## 베이스라인 동작 요약
 

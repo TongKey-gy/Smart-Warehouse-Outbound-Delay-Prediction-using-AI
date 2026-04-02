@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
+import re
+import shutil
+import urllib.error
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -10,7 +16,10 @@ from sklearn.model_selection import GroupKFold, KFold
 
 
 ROOT = Path(__file__).resolve().parent
+DEFAULT_DATA_URL = "https://drive.google.com/file/d/1_9SO7hGWSgiP7vGZfV095VH13OLBYwFG/view?usp=drive_link"
+DATA_URL = os.environ.get("OPEN_DATA_URL", DEFAULT_DATA_URL)
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(ROOT / "open"))).resolve()
+DATA_ZIP_PATH = ROOT / "open.zip"
 CACHE_DIR = ROOT / "cache"
 LOGS_DIR = ROOT / "logs"
 OUTPUTS_DIR = ROOT / "outputs"
@@ -21,6 +30,8 @@ EXPECTED_FILES = (
     "layout_info.csv",
     "sample_submission.csv",
 )
+
+logger = logging.getLogger("prepare")
 
 
 @dataclass(frozen=True)
@@ -41,9 +52,31 @@ class PreparedData:
     n_splits: int
 
 
+def configure_logging() -> None:
+    if logger.handlers:
+        return
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+
+
 def ensure_runtime_directories() -> None:
     for path in (CACHE_DIR, LOGS_DIR, OUTPUTS_DIR, SUBMISSIONS_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def extract_google_drive_file_id(url: str) -> str:
+    patterns = (
+        r"/file/d/([a-zA-Z0-9_-]+)",
+        r"[?&]id=([a-zA-Z0-9_-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    raise ValueError(f"Unable to extract a Google Drive file id from '{url}'.")
 
 
 def validate_data_dir(data_dir: Path = DATA_DIR) -> dict[str, Path]:
@@ -54,12 +87,102 @@ def validate_data_dir(data_dir: Path = DATA_DIR) -> dict[str, Path]:
         raise FileNotFoundError(
             f"Missing dataset files in '{expected_path}'. "
             f"Expected: {missing_text}. "
-            "Place train.csv, test.csv, layout_info.csv, and sample_submission.csv under open/."
+            "The dataset bootstrap expects open/train.csv, open/test.csv, "
+            "open/layout_info.csv, and open/sample_submission.csv."
         )
     return {name: data_dir / name for name in EXPECTED_FILES}
 
 
+def validate_extracted_dataset(data_dir: Path = DATA_DIR) -> None:
+    paths = validate_data_dir(data_dir)
+    for name, path in paths.items():
+        if path.stat().st_size == 0:
+            raise ValueError(f"Extracted dataset file '{name}' is empty: '{path}'.")
+
+
+def download_with_gdown(url: str, destination: Path) -> None:
+    logger.info("Downloading dataset with gdown: %s -> %s", url, destination)
+    try:
+        import gdown
+    except ImportError as exc:
+        raise RuntimeError(
+            "gdown is not installed. Install it with 'pip install gdown' and rerun prepare.py."
+        ) from exc
+
+    output = gdown.download(url=url, output=str(destination), quiet=False, fuzzy=True)
+    if output is None or not destination.exists():
+        raise RuntimeError("gdown did not produce the expected zip file.")
+
+
+def download_with_urllib(url: str, destination: Path) -> None:
+    file_id = extract_google_drive_file_id(url)
+    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    logger.info("Falling back to direct download: %s -> %s", direct_url, destination)
+    try:
+        with urllib.request.urlopen(direct_url) as response, destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Direct download failed for '{direct_url}': {exc}") from exc
+
+    if not destination.exists() or destination.stat().st_size == 0:
+        raise RuntimeError("Direct download produced an empty zip file.")
+
+
+def ensure_zip_downloaded(url: str = DATA_URL, destination: Path = DATA_ZIP_PATH) -> Path:
+    if destination.exists() and destination.stat().st_size > 0:
+        logger.info("Using existing zip file: %s", destination)
+        return destination
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        download_with_gdown(url, destination)
+    except Exception as gdown_error:
+        logger.warning("gdown download failed: %s", gdown_error)
+        if destination.exists():
+            destination.unlink()
+        try:
+            download_with_urllib(url, destination)
+        except Exception as direct_error:
+            if destination.exists():
+                destination.unlink()
+            raise RuntimeError(
+                "Failed to download dataset from Google Drive via both gdown and direct download. "
+                f"gdown error: {gdown_error} | direct download error: {direct_error}"
+            ) from direct_error
+
+    logger.info("Dataset zip is ready: %s (%.2f MB)", destination, destination.stat().st_size / (1024 * 1024))
+    return destination
+
+
+def extract_dataset(zip_path: Path = DATA_ZIP_PATH, data_dir: Path = DATA_DIR) -> None:
+    logger.info("Extracting dataset: %s -> %s", zip_path, data_dir)
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(ROOT)
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(f"Downloaded zip file is invalid: '{zip_path}'.") from exc
+
+    if not data_dir.exists():
+        raise FileNotFoundError(
+            f"Extraction completed but '{data_dir}' was not created. "
+            "Check whether the zip file contains the open/ directory."
+        )
+
+
+def ensure_dataset_available(data_dir: Path = DATA_DIR, url: str = DATA_URL) -> None:
+    if data_dir.exists():
+        logger.info("Dataset directory already exists. Skipping download and extraction: %s", data_dir)
+        validate_extracted_dataset(data_dir)
+        return
+
+    zip_path = ensure_zip_downloaded(url=url, destination=DATA_ZIP_PATH)
+    extract_dataset(zip_path=zip_path, data_dir=data_dir)
+    validate_extracted_dataset(data_dir)
+    logger.info("Dataset bootstrap completed successfully.")
+
+
 def load_raw_frames(data_dir: Path = DATA_DIR) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ensure_dataset_available(data_dir)
     paths = validate_data_dir(data_dir)
     train_df = pd.read_csv(paths["train.csv"])
     test_df = pd.read_csv(paths["test.csv"])
@@ -192,11 +315,17 @@ def summarize_prepared_data(prepared: PreparedData) -> dict[str, object]:
 
 
 def main() -> None:
-    prepared = load_prepared_data()
+    configure_logging()
+    try:
+        prepared = load_prepared_data()
+    except Exception as exc:
+        logger.exception("prepare.py failed: %s", exc)
+        raise SystemExit(1) from exc
+
     summary = summarize_prepared_data(prepared)
-    print("Data preparation check completed.")
+    logger.info("Data preparation check completed.")
     for key, value in summary.items():
-        print(f"- {key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":
