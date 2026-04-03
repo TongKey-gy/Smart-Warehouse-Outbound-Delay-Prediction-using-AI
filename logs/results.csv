@@ -1,1 +1,3 @@
 timestamp,target_column,cv_strategy,n_splits,n_train_rows,n_test_rows,n_features,rmse_mean,rmse_std,mae_mean,r2_mean,model_name,submission_path
+20260402_143455,avg_delay_minutes_next_30m,group_kfold,5,250000,50000,107,21.940369980463917,0.619936534694031,10.176447555393766,0.35601968550187035,baseline_lightgbm_v1,outputs/submissions/submission_baseline_lightgbm_v1_20260402_143455.csv
+20260403_192737,avg_delay_minutes_next_30m,group_kfold,5,250000,50000,107,21.940369980463917,0.619936534694031,10.176447555393766,0.35601968550187035,baseline_lightgbm_v1,outputs/submissions/submission_baseline_lightgbm_v1_20260403_192737.csv
