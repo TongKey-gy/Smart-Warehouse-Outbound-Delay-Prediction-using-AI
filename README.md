@@ -140,6 +140,7 @@ python train.py
 | 12 | submission_12.csv | submission_baseline_lightgbm_rmse_v4_seed84_20260403_211412.csv | 2026-04-03 21:14:12 | baseline_lightgbm_rmse_v4_seed84 | 21.769471 | - |
 | 13 | submission_13.csv | submission_blend_nnls7_20260403_211727.csv | 2026-04-03 21:17:27 | blend_nnls7 | - | - |
 | 14 | submission_14.csv | submission_exp01_group_scenario_baseline_20260404_013753.csv | 2026-04-04 01:37:53 | exp01_group_scenario_baseline | 9.844030 | baseline scenario groupkfold MAE tracking |
+| 15 | submission_15.csv | submission_exp02_group_scenario_layoutid_20260404_022314.csv | 2026-04-04 02:23:14 | exp02_group_scenario_layoutid | 9.849037 | enable layout_id categorical feature |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
