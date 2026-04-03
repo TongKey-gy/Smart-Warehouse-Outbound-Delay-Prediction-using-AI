@@ -1,157 +1,568 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import os
+import re
+import shutil
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
-from prepare import LOGS_DIR, SUBMISSIONS_DIR, ensure_runtime_directories, iter_cv_splits, load_prepared_data
+try:
+    import lightgbm as lgb
+    from lightgbm import LGBMRegressor
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "lightgbm is required for this baseline. "
+        "Install it with 'pip install lightgbm' or './.venv/bin/pip install lightgbm'."
+    ) from exc
+
+from prepare import (
+    LOGS_DIR,
+    OUTPUTS_DIR,
+    SUBMISSIONS_DIR,
+    ensure_runtime_directories,
+    iter_cv_splits,
+    load_prepared_data,
+)
+
+EXCLUDED_FEATURE_COLUMNS = (
+    "ID",
+    "layout_id",
+    "scenario_id",
+    "replenishment_overlap",
+    "task_reassign_15m",
+)
+
+README_PATH = Path(__file__).resolve().parent / "README.md"
+SUBMISSIONS_LOCAL_DIR = OUTPUTS_DIR / "submissions_local"
+EXPERIMENT_LOG_SECTION_TITLE = "## 실험기록"
+EXPERIMENT_LOG_START = "<!-- EXPERIMENT_LOG_START -->"
+EXPERIMENT_LOG_END = "<!-- EXPERIMENT_LOG_END -->"
+EXPERIMENT_LOG_COLUMNS = [
+    "실험 번호",
+    "저장 파일명 (submission_xx.csv)",
+    "원본 파일명",
+    "실험 시각",
+    "모델/전략",
+    "성능 점수",
+    "개선 사항",
+]
+SUBMISSION_ALIAS_PATTERN = re.compile(r"submission_(\d+)\.csv")
+ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$")
 
 
 @dataclass(frozen=True)
 class ExperimentConfig:
+    experiment_name: str = "baseline_lightgbm_rmse_v4"
     random_state: int = 42
-    learning_rate: float = 0.05
-    max_depth: int = 6
-    max_iter: int = 300
-    min_samples_leaf: int = 20
-    l2_regularization: float = 0.0
+    n_estimators: int = 800
+    learning_rate: float = 0.03
+    max_depth: int = 7
+    num_leaves: int = 63
+    subsample: float = 0.8
+    colsample_bytree: float = 0.8
+    min_child_samples: int = 20
+    reg_alpha: float = 0.1
+    reg_lambda: float = 0.1
+    early_stopping_rounds: int = 30
+    log_evaluation_period: int = 50
 
 
-def build_model(config: ExperimentConfig, numeric_columns: list[str], categorical_columns: list[str]) -> Pipeline:
-    transformers: list[tuple[str, Pipeline, list[str]]] = []
+def load_config_from_env(default: ExperimentConfig) -> ExperimentConfig:
+    values = asdict(default)
+    field_types = {name: field_info.type for name, field_info in ExperimentConfig.__dataclass_fields__.items()}
+
+    for name, field_type in field_types.items():
+        env_key = f"TRAIN_{name.upper()}"
+        raw_value = os.environ.get(env_key)
+        if raw_value is None:
+            continue
+
+        if field_type is int:
+            values[name] = int(raw_value)
+        elif field_type is float:
+            values[name] = float(raw_value)
+        else:
+            values[name] = raw_value
+
+    return ExperimentConfig(**values)
+
+
+def build_preprocessor(numeric_columns: list[str], categorical_columns: list[str]) -> ColumnTransformer:
+    transformers: list[tuple[str, object, list[str]]] = []
 
     if numeric_columns:
-        numeric_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="median")),
-            ]
+        transformers.append(
+            (
+                "numeric",
+                SimpleImputer(strategy="median"),
+                numeric_columns,
+            )
         )
-        transformers.append(("numeric", numeric_pipeline, numeric_columns))
 
     if categorical_columns:
-        categorical_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                (
-                    "encoder",
-                    OrdinalEncoder(
-                        handle_unknown="use_encoded_value",
-                        unknown_value=-1,
-                        encoded_missing_value=-1,
-                    ),
+        transformers.append(
+            (
+                "categorical",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        (
+                            "encoder",
+                            OrdinalEncoder(
+                                handle_unknown="use_encoded_value",
+                                unknown_value=-1,
+                                encoded_missing_value=-1,
+                            ),
+                        ),
+                    ]
                 ),
-            ]
+                categorical_columns,
+            )
         )
-        transformers.append(("categorical", categorical_pipeline, categorical_columns))
 
-    preprocessor = ColumnTransformer(
+    return ColumnTransformer(
         transformers=transformers,
         remainder="drop",
         verbose_feature_names_out=False,
     )
-    model = HistGradientBoostingRegressor(
+
+
+def build_model(config: ExperimentConfig, n_estimators: int | None = None) -> LGBMRegressor:
+    return LGBMRegressor(
+        n_estimators=n_estimators or config.n_estimators,
         learning_rate=config.learning_rate,
         max_depth=config.max_depth,
-        max_iter=config.max_iter,
-        min_samples_leaf=config.min_samples_leaf,
-        l2_regularization=config.l2_regularization,
+        num_leaves=config.num_leaves,
+        subsample=config.subsample,
+        colsample_bytree=config.colsample_bytree,
+        min_child_samples=config.min_child_samples,
+        reg_alpha=config.reg_alpha,
+        reg_lambda=config.reg_lambda,
         random_state=config.random_state,
-    )
-    return Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("model", model),
-        ]
+        metric="rmse",
+        verbose=-1,
     )
 
 
-def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float]:
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    mae = float(mean_absolute_error(y_true, y_pred))
-    r2 = float(r2_score(y_true, y_pred))
-    return {"rmse": rmse, "mae": mae, "r2": r2}
+def evaluate_rmse(y_true: pd.Series, y_pred: np.ndarray) -> float:
+    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
 
 
 def append_results_log(row: dict[str, object]) -> Path:
     results_path = LOGS_DIR / "results.csv"
-    frame = pd.DataFrame([row])
+    new_frame = pd.DataFrame([row])
+
     if results_path.exists():
-        frame.to_csv(results_path, mode="a", header=False, index=False)
+        existing = pd.read_csv(results_path)
+        ordered_columns = existing.columns.tolist()
+        for column in new_frame.columns:
+            if column not in ordered_columns:
+                ordered_columns.append(column)
+        for column in ordered_columns:
+            if column not in existing.columns:
+                existing[column] = pd.NA
+            if column not in new_frame.columns:
+                new_frame[column] = pd.NA
+        combined = pd.concat(
+            [existing.loc[:, ordered_columns], new_frame.loc[:, ordered_columns]],
+            ignore_index=True,
+        )
     else:
-        frame.to_csv(results_path, index=False)
+        combined = new_frame
+
+    combined.to_csv(results_path, index=False)
     return results_path
+
+
+def get_feature_names(preprocessor: ColumnTransformer) -> list[str]:
+    return preprocessor.get_feature_names_out().tolist()
+
+
+def create_experiment_dir(config: ExperimentConfig, timestamp: str) -> Path:
+    experiment_dir = OUTPUTS_DIR / "experiments" / f"{timestamp}_{config.experiment_name}"
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    return experiment_dir
+
+
+def ensure_local_submission_dir() -> Path:
+    SUBMISSIONS_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    return SUBMISSIONS_LOCAL_DIR
+
+
+def extract_timestamp_from_name(filename: str) -> str | None:
+    match = ORIGINAL_SUBMISSION_PATTERN.match(filename)
+    if not match:
+        return None
+    return match.group(2)
+
+
+def infer_strategy_from_name(filename: str) -> str:
+    stem = Path(filename).stem
+    timestamp = extract_timestamp_from_name(filename)
+    if timestamp is None:
+        return stem.removeprefix("submission_")
+    return stem[: -(len(timestamp) + 1)].removeprefix("submission_")
+
+
+def format_experiment_time(timestamp: str | None) -> str:
+    if not timestamp:
+        return "-"
+    return f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]} {timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}"
+
+
+def format_submission_alias(number: int) -> str:
+    return f"submission_{number:02d}.csv"
+
+
+def read_submission_alias_numbers() -> list[int]:
+    alias_numbers: set[int] = set()
+
+    if README_PATH.exists():
+        content = README_PATH.read_text(encoding="utf-8")
+        alias_numbers.update(int(match) for match in SUBMISSION_ALIAS_PATTERN.findall(content))
+
+    if SUBMISSIONS_LOCAL_DIR.exists():
+        for path in SUBMISSIONS_LOCAL_DIR.glob("submission_*.csv"):
+            match = re.fullmatch(SUBMISSION_ALIAS_PATTERN, path.name)
+            if match:
+                alias_numbers.add(int(match.group(1)))
+
+    return sorted(alias_numbers)
+
+
+def get_next_submission_number() -> int:
+    existing_numbers = read_submission_alias_numbers()
+    if not existing_numbers:
+        return 1
+    return max(existing_numbers) + 1
+
+
+def load_metrics_lookup() -> dict[str, dict[str, str]]:
+    metrics_lookup: dict[str, dict[str, str]] = {}
+
+    for metrics_path in sorted((OUTPUTS_DIR / "experiments").glob("*/metrics.json")):
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        summary = payload.get("summary", {})
+        submission_path = summary.get("submission_path", "")
+        original_name = Path(submission_path).name if submission_path else ""
+        if not original_name:
+            continue
+
+        score_value = summary.get("oof_rmse", summary.get("rmse_mean"))
+        score_text = "-" if score_value in (None, "") else f"{float(score_value):.6f}"
+        strategy = summary.get("model_name") or summary.get("experiment_name") or infer_strategy_from_name(original_name)
+
+        metrics_lookup[original_name] = {
+            "timestamp": summary.get("timestamp", "") or extract_timestamp_from_name(original_name) or "",
+            "score": score_text,
+            "strategy": str(strategy),
+            "improvement": str(summary.get("improvement_notes", "-") or "-"),
+        }
+
+    results_path = LOGS_DIR / "results.csv"
+    if results_path.exists():
+        results_frame = pd.read_csv(results_path)
+        for _, row in results_frame.iterrows():
+            submission_path = row.get("submission_path")
+            if pd.isna(submission_path):
+                continue
+
+            original_name = Path(str(submission_path)).name
+            if not original_name or original_name in metrics_lookup:
+                continue
+
+            raw_score = row.get("oof_rmse", row.get("rmse_mean"))
+            score_text = "-" if pd.isna(raw_score) else f"{float(raw_score):.6f}"
+            strategy = row.get("model_name", row.get("experiment_name", infer_strategy_from_name(original_name)))
+            timestamp = row.get("timestamp")
+            metrics_lookup[original_name] = {
+                "timestamp": "" if pd.isna(timestamp) else str(timestamp),
+                "score": score_text,
+                "strategy": str(strategy),
+                "improvement": "-" if pd.isna(row.get("improvement_notes")) else str(row.get("improvement_notes")),
+            }
+
+    return metrics_lookup
+
+
+def build_experiment_records() -> list[dict[str, str]]:
+    metrics_lookup = load_metrics_lookup()
+    original_files = sorted(
+        [path.name for path in SUBMISSIONS_DIR.glob("submission_*.csv")],
+        key=lambda name: extract_timestamp_from_name(name) or name,
+    )
+    records: list[dict[str, str]] = []
+
+    for idx, original_name in enumerate(original_files, start=1):
+        metrics = metrics_lookup.get(original_name, {})
+        timestamp = metrics.get("timestamp") or extract_timestamp_from_name(original_name) or ""
+        records.append(
+            {
+                "실험 번호": str(idx),
+                "저장 파일명 (submission_xx.csv)": format_submission_alias(idx),
+                "원본 파일명": original_name,
+                "실험 시각": format_experiment_time(timestamp),
+                "모델/전략": metrics.get("strategy", infer_strategy_from_name(original_name)),
+                "성능 점수": metrics.get("score", "-"),
+                "개선 사항": metrics.get("improvement", "-"),
+            }
+        )
+
+    return records
+
+
+def render_experiment_log_table(records: list[dict[str, str]]) -> str:
+    lines = [
+        "| " + " | ".join(EXPERIMENT_LOG_COLUMNS) + " |",
+        "| " + " | ".join(["---"] * len(EXPERIMENT_LOG_COLUMNS)) + " |",
+    ]
+    for record in records:
+        lines.append("| " + " | ".join(record[column] for column in EXPERIMENT_LOG_COLUMNS) + " |")
+    return "\n".join(lines)
+
+
+def update_readme_experiment_log() -> list[dict[str, str]]:
+    records = build_experiment_records()
+    table = render_experiment_log_table(records)
+    section = (
+        f"{EXPERIMENT_LOG_SECTION_TITLE}\n\n"
+        f"{EXPERIMENT_LOG_START}\n"
+        f"{table}\n"
+        f"{EXPERIMENT_LOG_END}"
+    )
+
+    content = README_PATH.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf"{re.escape(EXPERIMENT_LOG_SECTION_TITLE)}\n\n{re.escape(EXPERIMENT_LOG_START)}.*?{re.escape(EXPERIMENT_LOG_END)}",
+        re.DOTALL,
+    )
+
+    if pattern.search(content):
+        updated = pattern.sub(section, content, count=1)
+    else:
+        updated = content.rstrip() + "\n\n" + section + "\n"
+
+    README_PATH.write_text(updated, encoding="utf-8")
+    return records
+
+
+def archive_submission_locally(source_path: Path) -> tuple[int, Path]:
+    submission_number = get_next_submission_number()
+    local_dir = ensure_local_submission_dir()
+    alias_name = format_submission_alias(submission_number)
+    archived_path = local_dir / alias_name
+    shutil.copy2(source_path, archived_path)
+    return submission_number, archived_path
+
+
+def save_oof_predictions(
+    prepared,
+    predictions: pd.Series,
+    experiment_dir: Path,
+) -> Path:
+    oof_frame = pd.DataFrame(
+        {
+            "row_index": prepared.X_train.index,
+            "prediction": predictions.loc[prepared.X_train.index].to_numpy(),
+            "target": prepared.y.loc[prepared.X_train.index].to_numpy(),
+        }
+    )
+    if "ID" in prepared.train_df.columns:
+        oof_frame.insert(1, "ID", prepared.train_df.loc[prepared.X_train.index, "ID"].to_numpy())
+    oof_frame["residual"] = oof_frame["target"] - oof_frame["prediction"]
+    output_path = experiment_dir / "oof_predictions.csv"
+    oof_frame.to_csv(output_path, index=False)
+    return output_path
+
+
+def save_feature_importance(fold_importances: list[pd.DataFrame], experiment_dir: Path) -> Path | None:
+    if not fold_importances:
+        return None
+
+    all_importances = pd.concat(fold_importances, ignore_index=True)
+    summary = (
+        all_importances.groupby("feature_name", as_index=False)["importance"]
+        .mean()
+        .sort_values("importance", ascending=False)
+    )
+    output_path = experiment_dir / "feature_importance.csv"
+    summary.to_csv(output_path, index=False)
+    return output_path
+
+
+def save_experiment_summary(
+    config: ExperimentConfig,
+    fold_rmse_scores: list[float],
+    best_iterations: list[int],
+    results_row: dict[str, object],
+    experiment_dir: Path,
+) -> Path:
+    summary_path = experiment_dir / "metrics.json"
+    payload = {
+        "config": asdict(config),
+        "excluded_feature_columns": list(EXCLUDED_FEATURE_COLUMNS),
+        "fold_rmse_scores": fold_rmse_scores,
+        "best_iterations": best_iterations,
+        "summary": results_row,
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return summary_path
+
+
+def get_model_best_iteration(model: LGBMRegressor, config: ExperimentConfig) -> int:
+    best_iteration = getattr(model, "best_iteration_", None)
+    if best_iteration is None or best_iteration <= 0:
+        return config.n_estimators
+    return int(best_iteration)
+
+
+def select_training_view(prepared) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str]]:
+    selected_columns = [
+        column for column in prepared.feature_columns if column not in EXCLUDED_FEATURE_COLUMNS
+    ]
+    numeric_columns = [column for column in prepared.numeric_columns if column in selected_columns]
+    categorical_columns = [column for column in prepared.categorical_columns if column in selected_columns]
+    X_train = prepared.X_train.loc[:, selected_columns].copy()
+    X_test = prepared.X_test.loc[:, selected_columns].copy()
+    excluded_columns = [column for column in EXCLUDED_FEATURE_COLUMNS if column in prepared.feature_columns]
+    return X_train, X_test, numeric_columns, categorical_columns, excluded_columns
 
 
 def main() -> None:
     ensure_runtime_directories()
+    ensure_local_submission_dir()
     prepared = load_prepared_data()
-    config = ExperimentConfig()
+    config = load_config_from_env(ExperimentConfig())
+    improvement_notes = os.environ.get("TRAIN_IMPROVEMENT_NOTES", "-").strip() or "-"
+    X_train, X_test, numeric_columns, categorical_columns, excluded_columns = select_training_view(prepared)
 
-    fold_metrics: list[dict[str, float]] = []
+    oof_predictions = pd.Series(index=X_train.index, dtype=float)
+    fold_rmse_scores: list[float] = []
+    fold_importances: list[pd.DataFrame] = []
+    best_iterations: list[int] = []
+
     for fold_idx, train_idx, valid_idx in iter_cv_splits(prepared):
-        model = build_model(config, prepared.numeric_columns, prepared.categorical_columns)
-        X_fold_train = prepared.X_train.loc[train_idx]
+        X_fold_train = X_train.loc[train_idx]
         y_fold_train = prepared.y.loc[train_idx]
-        X_fold_valid = prepared.X_train.loc[valid_idx]
+        X_fold_valid = X_train.loc[valid_idx]
         y_fold_valid = prepared.y.loc[valid_idx]
 
-        model.fit(X_fold_train, y_fold_train)
-        fold_pred = model.predict(X_fold_valid)
-        metrics = evaluate_predictions(y_fold_valid, fold_pred)
-        fold_metrics.append(metrics)
-        print(
-            f"Fold {fold_idx}: "
-            f"RMSE={metrics['rmse']:.6f} "
-            f"MAE={metrics['mae']:.6f} "
-            f"R2={metrics['r2']:.6f}"
+        preprocessor = build_preprocessor(numeric_columns, categorical_columns)
+        X_fold_train_processed = preprocessor.fit_transform(X_fold_train)
+        X_fold_valid_processed = preprocessor.transform(X_fold_valid)
+        feature_names = get_feature_names(preprocessor)
+
+        model = build_model(config)
+        model.fit(
+            X_fold_train_processed,
+            y_fold_train,
+            eval_set=[(X_fold_valid_processed, y_fold_valid)],
+            eval_metric="rmse",
+            callbacks=[
+                lgb.early_stopping(config.early_stopping_rounds),
+                lgb.log_evaluation(config.log_evaluation_period),
+            ],
         )
 
-    rmse_scores = [metric["rmse"] for metric in fold_metrics]
-    mae_scores = [metric["mae"] for metric in fold_metrics]
-    r2_scores = [metric["r2"] for metric in fold_metrics]
+        best_iteration = get_model_best_iteration(model, config)
+        best_iterations.append(best_iteration)
+        fold_pred = model.predict(X_fold_valid_processed, num_iteration=best_iteration)
+        oof_predictions.loc[valid_idx] = fold_pred
+        fold_rmse = evaluate_rmse(y_fold_valid, fold_pred)
+        fold_rmse_scores.append(fold_rmse)
+        fold_importances.append(
+            pd.DataFrame(
+                {
+                    "fold": fold_idx,
+                    "feature_name": feature_names,
+                    "importance": model.feature_importances_,
+                }
+            )
+        )
+        print(
+            f"Fold {fold_idx}: RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}"
+        )
+
+    oof_rmse = evaluate_rmse(prepared.y.loc[oof_predictions.index], oof_predictions.loc[prepared.y.index])
+    final_n_estimators = max(1, int(round(float(np.mean(best_iterations)))))
     print(
-        f"CV Summary: RMSE={np.mean(rmse_scores):.6f}±{np.std(rmse_scores):.6f} "
-        f"MAE={np.mean(mae_scores):.6f} "
-        f"R2={np.mean(r2_scores):.6f}"
+        f"CV Summary: RMSE={np.mean(fold_rmse_scores):.6f}±{np.std(fold_rmse_scores):.6f} "
+        f"OOF_RMSE={oof_rmse:.6f} "
+        f"FINAL_N_ESTIMATORS={final_n_estimators}"
     )
 
-    final_model = build_model(config, prepared.numeric_columns, prepared.categorical_columns)
-    final_model.fit(prepared.X_train, prepared.y)
-    test_pred = final_model.predict(prepared.X_test)
+    final_preprocessor = build_preprocessor(numeric_columns, categorical_columns)
+    X_train_processed = final_processor.fit_transform(X_train)
+    X_test_processed = final_preprocessor.transform(X_test)
+    final_model = build_model(config, n_estimators=final_n_estimators)
+    final_model.fit(X_train_processed, prepared.y)
+    test_pred = final_model.predict(X_test_processed)
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = create_experiment_dir(config, timestamp)
     submission = prepared.submission_df.copy()
     submission[prepared.target_column] = test_pred
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    submission_path = SUBMISSIONS_DIR / f"submission_{timestamp}.csv"
+    submission_path = SUBMISSIONS_DIR / f"submission_{config.experiment_name}_{timestamp}.csv"
     submission.to_csv(submission_path, index=False)
     print(f"Saved submission: {submission_path}")
+    submission_number, archived_submission_path = archive_submission_locally(submission_path)
+    print(f"Archived submission copy: {archived_submission_path}")
+
+    oof_path = save_oof_predictions(prepared, oof_predictions, experiment_dir)
+    importance_path = save_feature_importance(fold_importances, experiment_dir)
 
     results_row = {
         "timestamp": timestamp,
+        "experiment_name": config.experiment_name,
         "target_column": prepared.target_column,
         "cv_strategy": prepared.cv_strategy,
         "n_splits": prepared.n_splits,
-        "n_train_rows": len(prepared.X_train),
-        "n_test_rows": len(prepared.X_test),
-        "n_features": len(prepared.feature_columns),
-        "rmse_mean": float(np.mean(rmse_scores)),
-        "rmse_std": float(np.std(rmse_scores)),
-        "mae_mean": float(np.mean(mae_scores)),
-        "r2_mean": float(np.mean(r2_scores)),
-        "model_name": "HistGradientBoostingRegressor",
+        "n_train_rows": len(X_train),
+        "n_test_rows": len(X_test),
+        "n_features": len(X_train.columns),
+        "excluded_features": "|".join(excluded_columns),
+        "metric_name": "rmse",
+        "rmse_mean": float(np.mean(fold_rmse_scores)),
+        "rmse_std": float(np.std(fold_rmse_scores)),
+        "oof_rmse": oof_rmse,
+        "best_iteration_mean": float(np.mean(best_iterations)),
+        "best_iteration_std": float(np.std(best_iterations)),
+        "final_n_estimators": final_n_estimators,
+        "model_name": config.experiment_name,
+        "improvement_notes": improvement_notes,
+        "config_json": json.dumps(asdict(config), sort_keys=True),
         "submission_path": str(submission_path.relative_to(Path.cwd())),
+        "submission_alias": format_submission_alias(submission_number),
+        "submission_local_path": str(archived_submission_path.relative_to(Path.cwd())),
+        "experiment_dir": str(experiment_dir.relative_to(Path.cwd())),
     }
+    summary_path = save_experiment_summary(
+        config,
+        fold_rmse_scores,
+        best_iterations,
+        results_row,
+        experiment_dir,
+    )
+    results_row["summary_path"] = str(summary_path.relative_to(Path.cwd()))
     results_path = append_results_log(results_row)
+    records = update_readme_experiment_log()
+
     print(f"Updated log: {results_path}")
+    print(f"Updated README experiment log with {len(records)} records")
+    print(f"Saved OOF predictions: {oof_path}")
+    if importance_path is not None:
+        print(f"Saved feature importance: {importance_path}")
+    print(f"Saved experiment summary: {summary_path}")
 
 
 if __name__ == "__main__":
