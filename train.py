@@ -7,12 +7,14 @@ import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -30,17 +32,38 @@ from prepare import (
     OUTPUTS_DIR,
     SUBMISSIONS_DIR,
     ensure_runtime_directories,
-    iter_cv_splits,
     load_prepared_data,
 )
 
-EXCLUDED_FEATURE_COLUMNS = (
+BASE_EXCLUDED_FEATURE_COLUMNS = (
     "ID",
-    "layout_id",
-    "scenario_id",
     "replenishment_overlap",
     "task_reassign_15m",
 )
+CONFIG = {
+    "experiment_name": "baseline_lightgbm_rmse_v4",
+    "validation_type": "group_kfold",
+    "group_column": "scenario_id",
+    "use_layout_id": False,
+    "use_scenario_id": False,
+    "seed": 42,
+    "n_splits": 5,
+    "n_estimators": 800,
+    "learning_rate": 0.03,
+    "num_leaves": 63,
+    "max_depth": 7,
+    "min_child_samples": 20,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 0.1,
+    "use_log_target": False,
+    "add_robot_balance_features": False,
+    "add_environment_features": False,
+    "add_workload_features": False,
+    "early_stopping_rounds": 30,
+    "log_evaluation_period": 50,
+}
 
 README_PATH = Path(__file__).resolve().parent / "README.md"
 SUBMISSIONS_LOCAL_DIR = OUTPUTS_DIR / "submissions_local"
@@ -63,22 +86,35 @@ ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$
 @dataclass(frozen=True)
 class ExperimentConfig:
     experiment_name: str = "baseline_lightgbm_rmse_v4"
-    random_state: int = 42
+    validation_type: str = "group_kfold"
+    group_column: str = "scenario_id"
+    use_layout_id: bool = False
+    use_scenario_id: bool = False
+    seed: int = 42
+    n_splits: int = 5
     n_estimators: int = 800
     learning_rate: float = 0.03
-    max_depth: int = 7
     num_leaves: int = 63
+    max_depth: int = 7
+    min_child_samples: int = 20
     subsample: float = 0.8
     colsample_bytree: float = 0.8
-    min_child_samples: int = 20
     reg_alpha: float = 0.1
     reg_lambda: float = 0.1
+    use_log_target: bool = False
+    add_robot_balance_features: bool = False
+    add_environment_features: bool = False
+    add_workload_features: bool = False
     early_stopping_rounds: int = 30
     log_evaluation_period: int = 50
 
 
-def load_config_from_env(default: ExperimentConfig) -> ExperimentConfig:
-    values = asdict(default)
+def _parse_bool(raw_value: str) -> bool:
+    return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def load_config() -> ExperimentConfig:
+    values = dict(CONFIG)
     field_types = {name: field_info.type for name, field_info in ExperimentConfig.__dataclass_fields__.items()}
 
     for name, field_type in field_types.items():
@@ -91,6 +127,8 @@ def load_config_from_env(default: ExperimentConfig) -> ExperimentConfig:
             values[name] = int(raw_value)
         elif field_type is float:
             values[name] = float(raw_value)
+        elif field_type is bool:
+            values[name] = _parse_bool(raw_value)
         else:
             values[name] = raw_value
 
@@ -148,7 +186,7 @@ def build_model(config: ExperimentConfig, n_estimators: int | None = None) -> LG
         min_child_samples=config.min_child_samples,
         reg_alpha=config.reg_alpha,
         reg_lambda=config.reg_lambda,
-        random_state=config.random_state,
+        random_state=config.seed,
         metric="rmse",
         verbose=-1,
     )
@@ -156,6 +194,10 @@ def build_model(config: ExperimentConfig, n_estimators: int | None = None) -> LG
 
 def evaluate_rmse(y_true: pd.Series, y_pred: np.ndarray) -> float:
     return float(np.sqrt(mean_squared_error(y_true, y_pred)))
+
+
+def evaluate_mae(y_true: pd.Series, y_pred: np.ndarray) -> float:
+    return float(mean_absolute_error(y_true, y_pred))
 
 
 def append_results_log(row: dict[str, object]) -> Path:
@@ -258,7 +300,7 @@ def load_metrics_lookup() -> dict[str, dict[str, str]]:
         if not original_name:
             continue
 
-        score_value = summary.get("oof_rmse", summary.get("rmse_mean"))
+        score_value = summary.get("oof_mae", summary.get("mae_mean", summary.get("oof_rmse", summary.get("rmse_mean"))))
         score_text = "-" if score_value in (None, "") else f"{float(score_value):.6f}"
         strategy = summary.get("model_name") or summary.get("experiment_name") or infer_strategy_from_name(original_name)
 
@@ -281,7 +323,7 @@ def load_metrics_lookup() -> dict[str, dict[str, str]]:
             if not original_name or original_name in metrics_lookup:
                 continue
 
-            raw_score = row.get("oof_rmse", row.get("rmse_mean"))
+            raw_score = row.get("oof_mae", row.get("mae_mean", row.get("oof_rmse", row.get("rmse_mean"))))
             score_text = "-" if pd.isna(raw_score) else f"{float(raw_score):.6f}"
             strategy = row.get("model_name", row.get("experiment_name", infer_strategy_from_name(original_name)))
             timestamp = row.get("timestamp")
@@ -403,6 +445,7 @@ def save_feature_importance(fold_importances: list[pd.DataFrame], experiment_dir
 def save_experiment_summary(
     config: ExperimentConfig,
     fold_rmse_scores: list[float],
+    fold_mae_scores: list[float],
     best_iterations: list[int],
     results_row: dict[str, object],
     experiment_dir: Path,
@@ -410,8 +453,9 @@ def save_experiment_summary(
     summary_path = experiment_dir / "metrics.json"
     payload = {
         "config": asdict(config),
-        "excluded_feature_columns": list(EXCLUDED_FEATURE_COLUMNS),
+        "excluded_feature_columns": list(get_excluded_feature_columns(config)),
         "fold_rmse_scores": fold_rmse_scores,
+        "fold_mae_scores": fold_mae_scores,
         "best_iterations": best_iterations,
         "summary": results_row,
     }
@@ -426,36 +470,134 @@ def get_model_best_iteration(model: LGBMRegressor, config: ExperimentConfig) -> 
     return int(best_iteration)
 
 
-def select_training_view(prepared) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str]]:
+def get_excluded_feature_columns(config: ExperimentConfig) -> list[str]:
+    excluded_columns = list(BASE_EXCLUDED_FEATURE_COLUMNS)
+    if not config.use_layout_id:
+        excluded_columns.append("layout_id")
+    if not config.use_scenario_id:
+        excluded_columns.append("scenario_id")
+    return excluded_columns
+
+
+def select_training_view(
+    prepared,
+    config: ExperimentConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str]]:
+    excluded_feature_columns = get_excluded_feature_columns(config)
     selected_columns = [
-        column for column in prepared.feature_columns if column not in EXCLUDED_FEATURE_COLUMNS
+        column for column in prepared.feature_columns if column not in excluded_feature_columns
     ]
     numeric_columns = [column for column in prepared.numeric_columns if column in selected_columns]
     categorical_columns = [column for column in prepared.categorical_columns if column in selected_columns]
     X_train = prepared.X_train.loc[:, selected_columns].copy()
     X_test = prepared.X_test.loc[:, selected_columns].copy()
-    excluded_columns = [column for column in EXCLUDED_FEATURE_COLUMNS if column in prepared.feature_columns]
+    excluded_columns = [column for column in excluded_feature_columns if column in prepared.feature_columns]
     return X_train, X_test, numeric_columns, categorical_columns, excluded_columns
+
+
+def add_engineered_features(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    config: ExperimentConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def transform(frame: pd.DataFrame) -> pd.DataFrame:
+        result = frame.copy()
+
+        if config.add_robot_balance_features:
+            if {"robot_active", "robot_idle", "robot_charging"}.issubset(result.columns):
+                total_robot_state = result["robot_active"] + result["robot_idle"] + result["robot_charging"] + 1.0
+                result["robot_active_ratio"] = result["robot_active"] / total_robot_state
+                result["robot_idle_ratio"] = result["robot_idle"] / total_robot_state
+                result["robot_charging_ratio"] = result["robot_charging"] / total_robot_state
+            if {"battery_mean", "battery_std"}.issubset(result.columns):
+                result["battery_stability"] = result["battery_mean"] - result["battery_std"]
+
+        if config.add_environment_features:
+            if {"warehouse_temp_avg", "external_temp_c"}.issubset(result.columns):
+                result["temp_gap"] = result["warehouse_temp_avg"] - result["external_temp_c"]
+            if {"humidity_pct", "warehouse_temp_avg"}.issubset(result.columns):
+                result["temp_humidity_interaction"] = result["humidity_pct"] * result["warehouse_temp_avg"]
+            if {"air_quality_idx", "co2_level_ppm"}.issubset(result.columns):
+                result["air_quality_load"] = result["air_quality_idx"] * result["co2_level_ppm"]
+
+        if config.add_workload_features:
+            if {"order_inflow_15m", "staff_on_floor"}.issubset(result.columns):
+                result["orders_per_staff"] = result["order_inflow_15m"] / (result["staff_on_floor"] + 1.0)
+            if {"order_inflow_15m", "robot_active"}.issubset(result.columns):
+                result["orders_per_robot"] = result["order_inflow_15m"] / (result["robot_active"] + 1.0)
+            if {"unique_sku_15m", "pick_list_length_avg"}.issubset(result.columns):
+                result["sku_pick_pressure"] = result["unique_sku_15m"] * result["pick_list_length_avg"]
+            if {"loading_dock_util", "staging_area_util"}.issubset(result.columns):
+                result["dock_staging_pressure"] = result["loading_dock_util"] * result["staging_area_util"]
+
+        return result
+
+    return transform(X_train), transform(X_test)
+
+
+def resolve_cv_groups(prepared, config: ExperimentConfig) -> pd.Series | None:
+    if config.validation_type != "group_kfold":
+        return None
+    if not config.group_column:
+        raise ValueError("CONFIG['group_column'] must be set when validation_type is 'group_kfold'.")
+    if config.group_column not in prepared.train_df.columns:
+        raise ValueError(f"Group column '{config.group_column}' is not available in train data.")
+    return prepared.train_df.loc[prepared.X_train.index, config.group_column].copy()
+
+
+def iter_train_cv_splits(prepared, config: ExperimentConfig) -> tuple[str, int, Iterator[tuple[int, pd.Index, pd.Index]]]:
+    index = prepared.X_train.index
+    if config.validation_type not in {"group_kfold", "kfold"}:
+        raise ValueError("CONFIG['validation_type'] must be either 'group_kfold' or 'kfold'.")
+
+    if config.validation_type == "group_kfold":
+        groups = resolve_cv_groups(prepared, config)
+        assert groups is not None
+        unique_groups = int(groups.nunique(dropna=False))
+        n_splits = min(config.n_splits, unique_groups)
+        if n_splits < 2:
+            raise ValueError("At least two unique groups are required for group_kfold validation.")
+        splitter = GroupKFold(n_splits=n_splits)
+        split_iter = splitter.split(prepared.X_train, prepared.y, groups=groups)
+    else:
+        n_splits = min(config.n_splits, len(index))
+        if n_splits < 2:
+            raise ValueError("At least two folds are required for kfold validation.")
+        splitter = KFold(n_splits=n_splits, shuffle=True, random_state=config.seed)
+        split_iter = splitter.split(prepared.X_train, prepared.y)
+
+    def generate() -> Iterator[tuple[int, pd.Index, pd.Index]]:
+        for fold_idx, (train_idx, valid_idx) in enumerate(split_iter, start=1):
+            yield fold_idx, index[train_idx], index[valid_idx]
+
+    return config.validation_type, n_splits, generate()
 
 
 def main() -> None:
     ensure_runtime_directories()
     ensure_local_submission_dir()
     prepared = load_prepared_data()
-    config = load_config_from_env(ExperimentConfig())
+    config = load_config()
     improvement_notes = os.environ.get("TRAIN_IMPROVEMENT_NOTES", "-").strip() or "-"
-    X_train, X_test, numeric_columns, categorical_columns, excluded_columns = select_training_view(prepared)
+    X_train, X_test, numeric_columns, categorical_columns, excluded_columns = select_training_view(prepared, config)
+    X_train, X_test = add_engineered_features(X_train, X_test, config)
+    numeric_columns = X_train.select_dtypes(include=["number"]).columns.tolist()
+    categorical_columns = [column for column in X_train.columns if column not in numeric_columns]
+    cv_strategy, actual_n_splits, split_iterator = iter_train_cv_splits(prepared, config)
+    train_target = np.log1p(prepared.y) if config.use_log_target else prepared.y.copy()
 
     oof_predictions = pd.Series(index=X_train.index, dtype=float)
     fold_rmse_scores: list[float] = []
+    fold_mae_scores: list[float] = []
     fold_importances: list[pd.DataFrame] = []
     best_iterations: list[int] = []
 
-    for fold_idx, train_idx, valid_idx in iter_cv_splits(prepared):
+    for fold_idx, train_idx, valid_idx in split_iterator:
         X_fold_train = X_train.loc[train_idx]
-        y_fold_train = prepared.y.loc[train_idx]
+        y_fold_train = train_target.loc[train_idx]
         X_fold_valid = X_train.loc[valid_idx]
         y_fold_valid = prepared.y.loc[valid_idx]
+        y_fold_valid_train_scale = train_target.loc[valid_idx]
 
         preprocessor = build_preprocessor(numeric_columns, categorical_columns)
         X_fold_train_processed = preprocessor.fit_transform(X_fold_train)
@@ -466,8 +608,8 @@ def main() -> None:
         model.fit(
             X_fold_train_processed,
             y_fold_train,
-            eval_set=[(X_fold_valid_processed, y_fold_valid)],
-            eval_metric="rmse",
+            eval_set=[(X_fold_valid_processed, y_fold_valid_train_scale)],
+            eval_metric="l1" if config.use_log_target else "mae",
             callbacks=[
                 lgb.early_stopping(config.early_stopping_rounds),
                 lgb.log_evaluation(config.log_evaluation_period),
@@ -477,9 +619,13 @@ def main() -> None:
         best_iteration = get_model_best_iteration(model, config)
         best_iterations.append(best_iteration)
         fold_pred = model.predict(X_fold_valid_processed, num_iteration=best_iteration)
+        if config.use_log_target:
+            fold_pred = np.expm1(fold_pred)
         oof_predictions.loc[valid_idx] = fold_pred
         fold_rmse = evaluate_rmse(y_fold_valid, fold_pred)
+        fold_mae = evaluate_mae(y_fold_valid, fold_pred)
         fold_rmse_scores.append(fold_rmse)
+        fold_mae_scores.append(fold_mae)
         fold_importances.append(
             pd.DataFrame(
                 {
@@ -490,13 +636,16 @@ def main() -> None:
             )
         )
         print(
-            f"Fold {fold_idx}: RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}"
+            f"Fold {fold_idx}: MAE={fold_mae:.6f} RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}"
         )
 
     oof_rmse = evaluate_rmse(prepared.y.loc[oof_predictions.index], oof_predictions.loc[prepared.y.index])
+    oof_mae = evaluate_mae(prepared.y.loc[oof_predictions.index], oof_predictions.loc[prepared.y.index])
     final_n_estimators = max(1, int(round(float(np.mean(best_iterations)))))
     print(
-        f"CV Summary: RMSE={np.mean(fold_rmse_scores):.6f}±{np.std(fold_rmse_scores):.6f} "
+        f"CV Summary: MAE={np.mean(fold_mae_scores):.6f}±{np.std(fold_mae_scores):.6f} "
+        f"OOF_MAE={oof_mae:.6f} "
+        f"RMSE={np.mean(fold_rmse_scores):.6f}±{np.std(fold_rmse_scores):.6f} "
         f"OOF_RMSE={oof_rmse:.6f} "
         f"FINAL_N_ESTIMATORS={final_n_estimators}"
     )
@@ -505,8 +654,10 @@ def main() -> None:
     X_train_processed = final_preprocessor.fit_transform(X_train)
     X_test_processed = final_preprocessor.transform(X_test)
     final_model = build_model(config, n_estimators=final_n_estimators)
-    final_model.fit(X_train_processed, prepared.y)
+    final_model.fit(X_train_processed, train_target)
     test_pred = final_model.predict(X_test_processed)
+    if config.use_log_target:
+        test_pred = np.expm1(test_pred)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = create_experiment_dir(config, timestamp)
@@ -525,15 +676,19 @@ def main() -> None:
         "timestamp": timestamp,
         "experiment_name": config.experiment_name,
         "target_column": prepared.target_column,
-        "cv_strategy": prepared.cv_strategy,
-        "n_splits": prepared.n_splits,
+        "cv_strategy": cv_strategy,
+        "group_column": config.group_column if cv_strategy == "group_kfold" else "-",
+        "n_splits": actual_n_splits,
         "n_train_rows": len(X_train),
         "n_test_rows": len(X_test),
         "n_features": len(X_train.columns),
         "excluded_features": "|".join(excluded_columns),
-        "metric_name": "rmse",
+        "metric_name": "mae",
+        "mae_mean": float(np.mean(fold_mae_scores)),
+        "mae_std": float(np.std(fold_mae_scores)),
         "rmse_mean": float(np.mean(fold_rmse_scores)),
         "rmse_std": float(np.std(fold_rmse_scores)),
+        "oof_mae": oof_mae,
         "oof_rmse": oof_rmse,
         "best_iteration_mean": float(np.mean(best_iterations)),
         "best_iteration_std": float(np.std(best_iterations)),
@@ -549,6 +704,7 @@ def main() -> None:
     summary_path = save_experiment_summary(
         config,
         fold_rmse_scores,
+        fold_mae_scores,
         best_iterations,
         results_row,
         experiment_dir,
