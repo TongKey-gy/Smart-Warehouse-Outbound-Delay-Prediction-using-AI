@@ -115,20 +115,19 @@ def _parse_bool(raw_value: str) -> bool:
 
 def load_config() -> ExperimentConfig:
     values = dict(CONFIG)
-    field_types = {name: field_info.type for name, field_info in ExperimentConfig.__dataclass_fields__.items()}
 
-    for name, field_type in field_types.items():
+    for name, default_value in CONFIG.items():
         env_key = f"TRAIN_{name.upper()}"
         raw_value = os.environ.get(env_key)
         if raw_value is None:
             continue
 
-        if field_type is int:
-            values[name] = int(raw_value)
-        elif field_type is float:
-            values[name] = float(raw_value)
-        elif field_type is bool:
+        if isinstance(default_value, bool):
             values[name] = _parse_bool(raw_value)
+        elif isinstance(default_value, int):
+            values[name] = int(raw_value)
+        elif isinstance(default_value, float):
+            values[name] = float(raw_value)
         else:
             values[name] = raw_value
 
