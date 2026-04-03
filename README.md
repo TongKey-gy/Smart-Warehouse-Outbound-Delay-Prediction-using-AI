@@ -64,8 +64,8 @@ open/
 
 - `prepare.py`에서 준비된 데이터 사용
 - 베이스라인 모델 학습
-- 교차검증 수행 및 fold score 출력
-- 전체 score 집계
+- 교차검증 수행 및 fold별 `MAE`, `RMSE` 출력
+- 전체 `OOF MAE` 중심 score 집계
 - submission 파일 생성
 - `outputs/submissions_local/submission_xx.csv` 복사본 생성
 - `logs/results.csv`에 실험 결과 기록
@@ -115,7 +115,8 @@ python train.py
 
 - `layout_id` 기준으로 layout 메타데이터 병합
 - 타깃은 `train`에는 있고 `test`에는 없는 컬럼 중 자동 탐지
-- `scenario_id`가 있으면 `GroupKFold`, 없으면 `KFold`
+- `CONFIG`에서 `validation_type`, `group_column`, `use_layout_id`, `use_scenario_id`, seed, LightGBM 하이퍼파라미터를 직접 제어
+- `CONFIG`에서 간단한 feature engineering 토글을 켜고 끌 수 있음
 - 범주형 컬럼은 ordinal encoding
 - 수치형 컬럼은 median imputation
 - 기본 모델은 `LightGBMRegressor`
@@ -125,8 +126,8 @@ python train.py
 <!-- EXPERIMENT_LOG_START -->
 | 실험 번호 | 저장 파일명 (submission_xx.csv) | 원본 파일명 | 실험 시각 | 모델/전략 | 성능 점수 | 개선 사항 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | submission_01.csv | submission_baseline_lightgbm_v1_20260402_143455.csv | 2026-04-02 14:34:55 | baseline_lightgbm_v1 | 21.940370 | - |
-| 2 | submission_02.csv | submission_baseline_lightgbm_v1_20260403_192737.csv | 2026-04-03 19:27:37 | baseline_lightgbm_v1 | 21.940370 | - |
+| 1 | submission_01.csv | submission_baseline_lightgbm_v1_20260402_143455.csv | 2026-04-02 14:34:55 | baseline_lightgbm_v1 | 10.176448 | - |
+| 2 | submission_02.csv | submission_baseline_lightgbm_v1_20260403_192737.csv | 2026-04-03 19:27:37 | baseline_lightgbm_v1 | 10.176448 | - |
 | 3 | submission_03.csv | submission_baseline_lightgbm_rmse_v2_20260403_202532.csv | 2026-04-03 20:25:32 | baseline_lightgbm_rmse_v2 | 21.774106 | - |
 | 4 | submission_04.csv | submission_baseline_lightgbm_rmse_v2_20260403_204521.csv | 2026-04-03 20:45:21 | baseline_lightgbm_rmse_v2 | 21.774106 | - |
 | 5 | submission_05.csv | submission_baseline_lightgbm_rmse_v3_20260403_205311.csv | 2026-04-03 20:53:11 | baseline_lightgbm_rmse_v3 | 21.764786 | - |
@@ -138,6 +139,7 @@ python train.py
 | 11 | submission_11.csv | submission_baseline_lightgbm_rmse_v4_seed21_20260403_211321.csv | 2026-04-03 21:13:21 | baseline_lightgbm_rmse_v4_seed21 | 21.769780 | - |
 | 12 | submission_12.csv | submission_baseline_lightgbm_rmse_v4_seed84_20260403_211412.csv | 2026-04-03 21:14:12 | baseline_lightgbm_rmse_v4_seed84 | 21.769471 | - |
 | 13 | submission_13.csv | submission_blend_nnls7_20260403_211727.csv | 2026-04-03 21:17:27 | blend_nnls7 | - | - |
+| 14 | submission_14.csv | submission_exp01_group_scenario_baseline_20260404_013753.csv | 2026-04-04 01:37:53 | exp01_group_scenario_baseline | 9.844030 | baseline scenario groupkfold MAE tracking |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
