@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -47,6 +47,12 @@ class ExperimentConfig:
     early_stopping_rounds: int = 50
     log_evaluation_period: int = 100
 
+        if field_type is int:
+            values[name] = int(raw_value)
+        elif field_type is float:
+            values[name] = float(raw_value)
+        else:
+            values[name] = raw_value
 
 def build_preprocessor(numeric_columns: list[str], categorical_columns: list[str]) -> ColumnTransformer:
     transformers: list[tuple[str, object, list[str]]] = []
@@ -103,20 +109,33 @@ def build_model(config: ExperimentConfig) -> LGBMRegressor:
     )
 
 
-def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float]:
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    mae = float(mean_absolute_error(y_true, y_pred))
-    r2 = float(r2_score(y_true, y_pred))
-    return {"rmse": rmse, "mae": mae, "r2": r2}
+def evaluate_rmse(y_true: pd.Series, y_pred: np.ndarray) -> float:
+    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
 
 
 def append_results_log(row: dict[str, object]) -> Path:
     results_path = LOGS_DIR / "results.csv"
-    frame = pd.DataFrame([row])
+    new_frame = pd.DataFrame([row])
+
     if results_path.exists():
-        frame.to_csv(results_path, mode="a", header=False, index=False)
+        existing = pd.read_csv(results_path)
+        ordered_columns = existing.columns.tolist()
+        for column in new_frame.columns:
+            if column not in ordered_columns:
+                ordered_columns.append(column)
+        for column in ordered_columns:
+            if column not in existing.columns:
+                existing[column] = pd.NA
+            if column not in new_frame.columns:
+                new_frame[column] = pd.NA
+        combined = pd.concat(
+            [existing.loc[:, ordered_columns], new_frame.loc[:, ordered_columns]],
+            ignore_index=True,
+        )
     else:
-        frame.to_csv(results_path, index=False)
+        combined = new_frame
+
+    combined.to_csv(results_path, index=False)
     return results_path
 
 
@@ -183,8 +202,16 @@ def save_experiment_summary(
 
 def main() -> None:
     ensure_runtime_directories()
+    ensure_local_submission_dir()
     prepared = load_prepared_data()
-    config = ExperimentConfig()
+    config = load_config_from_env(ExperimentConfig())
+    improvement_notes = os.environ.get("TRAIN_IMPROVEMENT_NOTES", "-").strip() or "-"
+    X_train, X_test, numeric_columns, categorical_columns, excluded_columns = select_training_view(prepared)
+
+    oof_predictions = pd.Series(index=X_train.index, dtype=float)
+    fold_rmse_scores: list[float] = []
+    fold_importances: list[pd.DataFrame] = []
+    best_iterations: list[int] = []
 
     oof_predictions = pd.Series(index=prepared.X_train.index, dtype=float)
     fold_metrics: list[dict[str, float]] = []
@@ -193,7 +220,7 @@ def main() -> None:
     for fold_idx, train_idx, valid_idx in iter_cv_splits(prepared):
         X_fold_train = prepared.X_train.loc[train_idx]
         y_fold_train = prepared.y.loc[train_idx]
-        X_fold_valid = prepared.X_train.loc[valid_idx]
+        X_fold_valid = X_train.loc[valid_idx]
         y_fold_valid = prepared.y.loc[valid_idx]
 
         preprocessor = build_preprocessor(prepared.numeric_columns, prepared.categorical_columns)
@@ -227,10 +254,7 @@ def main() -> None:
             )
         )
         print(
-            f"Fold {fold_idx}: "
-            f"RMSE={metrics['rmse']:.6f} "
-            f"MAE={metrics['mae']:.6f} "
-            f"R2={metrics['r2']:.6f}"
+            f"Fold {fold_idx}: RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}"
         )
 
     rmse_scores = [metric["rmse"] for metric in fold_metrics]
@@ -258,12 +282,18 @@ def main() -> None:
     submission_path = SUBMISSIONS_DIR / f"submission_{config.experiment_name}_{timestamp}.csv"
     submission.to_csv(submission_path, index=False)
     print(f"Saved submission: {submission_path}")
+    submission_number, archived_submission_path = archive_submission_locally(submission_path)
+    print(f"Archived submission copy: {archived_submission_path}")
+
+    oof_path = save_oof_predictions(prepared, oof_predictions, experiment_dir)
+    importance_path = save_feature_importance(fold_importances, experiment_dir)
 
     oof_path = save_oof_predictions(prepared, oof_predictions, experiment_dir)
     importance_path = save_feature_importance(fold_importances, experiment_dir)
 
     results_row = {
         "timestamp": timestamp,
+        "experiment_name": config.experiment_name,
         "target_column": prepared.target_column,
         "cv_strategy": prepared.cv_strategy,
         "n_splits": prepared.n_splits,
@@ -276,6 +306,9 @@ def main() -> None:
         "r2_mean": float(np.mean(r2_scores)),
         "model_name": config.experiment_name,
         "submission_path": str(submission_path.relative_to(Path.cwd())),
+        "submission_alias": format_submission_alias(submission_number),
+        "submission_local_path": str(archived_submission_path.relative_to(Path.cwd())),
+        "experiment_dir": str(experiment_dir.relative_to(Path.cwd())),
     }
     summary_path = save_experiment_summary(config, fold_metrics, results_row, experiment_dir)
     results_path = append_results_log(results_row)
