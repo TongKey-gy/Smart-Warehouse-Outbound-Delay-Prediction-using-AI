@@ -511,16 +511,6 @@ def extract_experiment_number(row: pd.Series, fallback_number: int) -> int:
     return fallback_number
 
 
-def get_portfolio_phase(experiment_number: int) -> tuple[str, str]:
-    if 1 <= experiment_number <= 10:
-        return ("Phase 1", "Foundations")
-    if 11 <= experiment_number <= 47:
-        return ("Phase 2", "KFold Expansion")
-    if 48 <= experiment_number <= 70:
-        return ("Phase 3", "GroupKFold Stabilization")
-    return ("Phase 4", "Bottleneck and Blend Optimization")
-
-
 def build_conclusion_text(current_score: float, previous_score: float | None) -> str:
     if previous_score is None:
         return "첫 기준 실험으로 사용한 설정이며, 이후 탐색의 출발점으로 삼을 수 있는 점수를 확보했다."
@@ -568,35 +558,22 @@ def render_portfolio_entry(
 
     return "\n".join(
         [
-            f"### Experiment {experiment_number:02d} — {prettify_experiment_title(row)}",
+            f"## Experiment {experiment_number:02d} — {prettify_experiment_title(row)}",
             "",
-            "**Objective**",
-            objective,
-            "",
-            "**Change**",
-            change,
-            "",
-            "**Hypothesis**",
-            hypothesis,
-            "",
-            "**Result**",
-            score_text,
-            "",
-            "**Conclusion**",
-            conclusion,
-            "",
-            "**Next Step**",
-            next_step,
+            "| 항목 | 내용 |",
+            "|---|---|",
+            f"| Objective | {objective} |",
+            f"| Change | {change} |",
+            f"| Hypothesis | {hypothesis} |",
+            f"| Result | {score_text} |",
+            f"| Conclusion | {conclusion} |",
+            f"| Next Step | {next_step} |",
         ]
     )
 
 
 def normalize_portfolio_markdown(text: str) -> str:
-    normalized = text
-    normalized = re.sub(r"(?m)^Experiment (\d{2} — .+)$", r"### Experiment \1", normalized)
-    for label in ["Objective", "Change", "Hypothesis", "Result", "Conclusion", "Next Step"]:
-        normalized = re.sub(rf"(?m)^{re.escape(label)}$", f"**{label}**", normalized)
-    return normalized
+    return text
 
 
 def update_portfolio_experiment_log() -> Path:
@@ -626,29 +603,16 @@ def update_portfolio_experiment_log() -> Path:
         "",
         "## Overview",
         "",
-        "- 각 실험은 `Objective`, `Change`, `Hypothesis`, `Result`, `Conclusion`, `Next Step` 순서로 기록합니다.",
+        "- 각 실험은 `## Experiment XX — 제목` 형식의 헤더와 2열 표로 정리합니다.",
+        "- 표의 행 순서는 `Objective`, `Change`, `Hypothesis`, `Result`, `Conclusion`, `Next Step`로 고정합니다.",
         "- 문장 내용은 실행 로그를 바탕으로 자동 생성되며, 실험 번호 순서대로 누적됩니다.",
-        "- 아래 섹션은 실험 흐름을 읽기 쉽도록 단계별로만 구분합니다.",
         "",
     ]
 
     previous_score: float | None = None
     portfolio_index = 1
-    current_phase: tuple[str, str] | None = None
     for _, row in results_frame.iterrows():
         config = parse_config_json(row.get("config_json"))
-        experiment_number = extract_experiment_number(row, portfolio_index)
-        phase = get_portfolio_phase(experiment_number)
-        if phase != current_phase:
-            lines.extend(
-                [
-                    f"## {phase[0]}",
-                    "",
-                    phase[1],
-                    "",
-                ]
-            )
-            current_phase = phase
         entry = render_portfolio_entry(row, config, portfolio_index, previous_score)
         lines.append(entry)
         lines.append("")
