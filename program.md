@@ -5,7 +5,7 @@ The goal is to improve cross-validation performance on the Dacon Smart Warehouse
 
 ## Objective
 
-- Improve the primary validation score reported by `train.py`
+- Improve the primary `OOF MAE` reported by `train.py`
 - Keep experiments reproducible and easy to compare
 - Preserve the raw data under `open/`
 - Always keep submission generation working
@@ -18,6 +18,7 @@ The goal is to improve cross-validation performance on the Dacon Smart Warehouse
   - Treat this file as infrastructure
 - `train.py`
   - Main experiment surface
+  - Keep the top-level `CONFIG` as the primary control surface for repeated experiments
   - This is the primary file to edit during iterative research
 - `program.md`
   - Rules for autonomous experimentation
@@ -85,6 +86,7 @@ The goal is to improve cross-validation performance on the Dacon Smart Warehouse
 - 모든 실험은 `README.md`의 `실험기록` 표에 기록한다
 - 제출 복사본은 `outputs/submissions_local/submission_xx.csv` 형식을 사용한다
 - 성능 점수는 `logs/results.csv` 또는 `metrics.json` 기준으로 기록한다
+- 성능 점수는 `OOF MAE`를 우선 기준으로 해석한다
 - 각 실험의 개선 사항을 함께 기록한다
 
 ## Notes For Agents
