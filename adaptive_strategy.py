@@ -1,8 +1,8 @@
 """Adaptive experiment strategy state for the next training run."""
 
-ITERATION = 21
-ANALYSIS = '직전 실험 `adaptive_fast_gkf_20`의 OOF MAE는 9.170406, fold std는 0.342380였다. 평균 residual은 3.5158, 상위 1% tail residual 평균은 164.8651로 고지연 구간 과소예측이 남아 있다. 현재 최고점 대비 차이는 0.019459다.'
-PROPOSAL = 'delay_risk와 workload를 결합하고 보조 모델도 약하게 가중해 분산과 tail bias를 동시에 줄인다.'
+ITERATION = 23
+ANALYSIS = '직전 실험 `adaptive_fast_gkf_22`의 OOF MAE는 10.011940, fold std는 0.305246였다. 평균 residual은 -0.7834, 상위 1% tail residual 평균은 132.5530로 고지연 구간 과소예측이 남아 있다. 현재 최고점 대비 차이는 0.860993다.'
+PROPOSAL = '시간대 패턴과 약한 정규화를 통해 고지연 샘플 분리를 더 세밀하게 시도한다.'
 CURRENT_STRATEGY = {
     'validation_type': 'group_kfold',
     'group_column': 'scenario_id',
@@ -16,34 +16,34 @@ CURRENT_STRATEGY = {
     'num_leaves': 127,
     'max_depth': 11,
     'min_child_samples': 20,
-    'subsample': 0.9,
-    'colsample_bytree': 0.85,
-    'reg_alpha': 0.03,
-    'reg_lambda': 0.03,
+    'subsample': 0.93,
+    'colsample_bytree': 0.9,
+    'reg_alpha': 0.015,
+    'reg_lambda': 0.015,
     'objective': 'quantile',
     'objective_alpha': 0.65,
     'use_log_target': True,
     'add_robot_balance_features': False,
     'add_environment_features': False,
-    'add_workload_features': True,
+    'add_workload_features': False,
     'add_capacity_features': True,
     'add_bottleneck_features': True,
-    'add_temporal_features': False,
+    'add_temporal_features': True,
     'add_congestion_features': False,
     'add_layout_interaction_features': False,
     'add_delay_risk_features': True,
-    'target_weight_mode': 'sqrt',
-    'target_weight_strength': 0.1,
+    'target_weight_mode': 'log',
+    'target_weight_strength': 0.36000000000000004,
     'min_prediction': 0.0,
     'blend_secondary_model': True,
-    'secondary_weight': 0.22,
+    'secondary_weight': 0.25,
     'secondary_use_layout_id': True,
     'secondary_add_capacity_features': True,
     'secondary_add_bottleneck_features': True,
-    'secondary_target_weight_mode': 'log',
-    'secondary_target_weight_strength': 0.08,
+    'secondary_target_weight_mode': 'none',
+    'secondary_target_weight_strength': 0.0,
     'secondary_seed': 7,
     'early_stopping_rounds': 20,
     'log_evaluation_period': 200,
-    'experiment_name': 'adaptive_fast_gkf_21',
+    'experiment_name': 'adaptive_fast_gkf_23',
 }

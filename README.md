@@ -289,6 +289,14 @@ python train.py
 | 156 | submission_156.csv | submission_adaptive_fast_gkf_19_20260404_184303.csv | 2026-04-04 18:43:03 | adaptive_fast_gkf_19 | 10.056321 | tail underprediction을 줄이기 위해 delay_risk 피처와 stronger log weighting을 우선 적용한다. |
 | 157 | submission_157.csv | submission_adaptive_fast_gkf_19_20260404_184315.csv | 2026-04-04 18:43:15 | adaptive_fast_gkf_19 | 9.897084 | 시간대 패턴과 약한 정규화를 통해 고지연 샘플 분리를 더 세밀하게 시도한다. | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
 | 158 | submission_158.csv | submission_adaptive_fast_gkf_20_20260404_184502.csv | 2026-04-04 18:45:02 | adaptive_fast_gkf_20 | 9.170406 | 레이아웃 제약과 수요 압력의 상호작용을 함께 반영해 구조적 병목을 더 직접적으로 잡는다. |
+| 159 | submission_159.csv | submission_adaptive_fast_gkf_20_20260404_184819.csv | 2026-04-04 18:48:19 | adaptive_fast_gkf_20 | 10.088711 | 최근 fold 변동성을 완화하기 위해 블렌드 비중을 줄이고 트리를 약간 보수적으로 조정한다. |
+| 160 | submission_160.csv | submission_adaptive_fast_gkf_21_20260404_185517.csv | 2026-04-04 18:55:17 | adaptive_fast_gkf_21 | 10.058631 | tail underprediction을 줄이기 위해 delay_risk 피처와 stronger log weighting을 우선 적용한다. |
+| 161 | submission_161.csv | submission_exp_recheck_adaptive_gkf01_delayrisk_congestion_20260404_185658.csv | 2026-04-04 18:56:58 | exp_recheck_adaptive_gkf01_delayrisk_congestion | 9.110268 | adaptive_gkf_01에 congestion 피처만 추가해 좁게 재검증 | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 162 | submission_162.csv | submission_adaptive_fast_gkf_21_20260404_185737.csv | 2026-04-04 18:57:37 | adaptive_fast_gkf_21 | 9.911427 | delay_risk와 workload를 결합하고 보조 모델도 약하게 가중해 분산과 tail bias를 동시에 줄인다. | blend_secondary_model weight=0.22 secondary_use_layout_id=True secondary_target_weight_mode=log |
+| 163 | submission_163.csv | submission_adaptive_gkf_07_20260404_185832.csv | 2026-04-04 18:58:32 | adaptive_gkf_07 | 9.790040 | tail underprediction을 줄이기 위해 delay_risk 피처와 stronger log weighting을 우선 적용한다. | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 164 | submission_164.csv | submission_exp_promote_adaptive_fast_gkf24_full5fold_20260404_190120.csv | 2026-04-04 19:01:20 | exp_promote_adaptive_fast_gkf24_full5fold | 9.151144 | adaptive_fast_gkf_24 최고 row를 5-fold full setting으로 승격 검증 |
+| 165 | submission_165.csv | submission_adaptive_fast_gkf_22_20260404_190215.csv | 2026-04-04 19:02:15 | adaptive_fast_gkf_22 | 9.964801 | 레이아웃 제약과 수요 압력의 상호작용을 함께 반영해 구조적 병목을 더 직접적으로 잡는다. |
+| 166 | submission_166.csv | submission_adaptive_fast_gkf_22_20260404_190446.csv | 2026-04-04 19:04:46 | adaptive_fast_gkf_22 | 10.011940 | 복잡한 상호작용을 더 담기 위해 트리 용량을 늘리고, congestion 피처를 추가한다. |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
