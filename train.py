@@ -442,6 +442,7 @@ def save_feature_importance(fold_importances: list[pd.DataFrame], experiment_dir
 
 
 def save_experiment_summary(
+    prepared,
     config: ExperimentConfig,
     fold_rmse_scores: list[float],
     fold_mae_scores: list[float],
@@ -701,6 +702,7 @@ def main() -> None:
         "experiment_dir": str(experiment_dir.relative_to(Path.cwd())),
     }
     summary_path = save_experiment_summary(
+        prepared,
         config,
         fold_rmse_scores,
         fold_mae_scores,
