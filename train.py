@@ -68,6 +68,7 @@ CONFIG = {
     "add_temporal_features": False,
     "add_congestion_features": False,
     "add_layout_interaction_features": False,
+    "layout_feature_set": "base",
     "add_delay_risk_features": False,
     "delay_risk_feature_set": "base",
     "target_weight_mode": "log",
@@ -81,6 +82,7 @@ CONFIG = {
     "secondary_add_bottleneck_features": True,
     "secondary_add_temporal_features": False,
     "secondary_add_congestion_features": False,
+    "secondary_layout_feature_set": "base",
     "secondary_delay_risk_feature_set": "base",
     "secondary_target_weight_mode": "none",
     "secondary_target_weight_strength": 0.0,
@@ -137,6 +139,7 @@ class ExperimentConfig:
     add_temporal_features: bool = False
     add_congestion_features: bool = False
     add_layout_interaction_features: bool = False
+    layout_feature_set: str = "base"
     add_delay_risk_features: bool = False
     delay_risk_feature_set: str = "base"
     target_weight_mode: str = "log"
@@ -150,6 +153,7 @@ class ExperimentConfig:
     secondary_add_bottleneck_features: bool = True
     secondary_add_temporal_features: bool = False
     secondary_add_congestion_features: bool = False
+    secondary_layout_feature_set: str = "base"
     secondary_delay_risk_feature_set: str = "base"
     secondary_target_weight_mode: str = "none"
     secondary_target_weight_strength: float = 0.0
@@ -907,6 +911,53 @@ def add_engineered_features(
             if {"charger_count", "robot_total"}.issubset(result.columns):
                 result["charger_coverage"] = result["charger_count"] / (result["robot_total"] + 1.0)
 
+            layout_feature_set = str(config.layout_feature_set).strip().lower()
+            add_flow = layout_feature_set in {"plus_flow", "plus_hybrid", "plus_all"}
+            add_density = layout_feature_set in {"plus_density", "plus_hybrid", "plus_all"}
+            add_path = layout_feature_set in {"plus_path", "plus_hybrid", "plus_all"}
+
+            if add_flow:
+                if {"order_inflow_15m", "avg_trip_distance", "layout_compactness"}.issubset(result.columns):
+                    result["layout_flow_travel_pressure"] = (
+                        result["order_inflow_15m"] * result["avg_trip_distance"] * (1.0 - result["layout_compactness"])
+                    )
+                if {"loading_dock_util", "avg_trip_distance", "one_way_ratio"}.issubset(result.columns):
+                    result["dock_detour_pressure"] = (
+                        result["loading_dock_util"] * result["avg_trip_distance"] * (1.0 + result["one_way_ratio"])
+                    )
+                if {"pack_utilization", "zone_dispersion", "layout_compactness"}.issubset(result.columns):
+                    result["pack_layout_mismatch"] = (
+                        result["pack_utilization"] * (1.0 + result["zone_dispersion"]) * (1.0 - result["layout_compactness"])
+                    )
+
+            if add_density:
+                if {"robot_active", "floor_area_sqm", "intersection_count"}.issubset(result.columns):
+                    result["robot_intersection_density"] = (
+                        result["robot_active"] * (1.0 + result["intersection_count"])
+                    ) / (result["floor_area_sqm"] + 1.0)
+                if {"pack_station_count", "floor_area_sqm", "order_inflow_15m"}.issubset(result.columns):
+                    result["pack_floor_pressure"] = (
+                        result["order_inflow_15m"] * result["pack_station_count"]
+                    ) / (result["floor_area_sqm"] + 1.0)
+                if {"storage_density_pct", "floor_area_sqm", "zone_dispersion"}.issubset(result.columns):
+                    result["storage_zone_pressure"] = (
+                        result["storage_density_pct"] * (1.0 + result["zone_dispersion"])
+                    ) / np.sqrt(result["floor_area_sqm"] + 1.0)
+
+            if add_path:
+                if {"aisle_traffic_score", "aisle_width_avg", "order_inflow_15m"}.issubset(result.columns):
+                    result["aisle_capacity_pressure"] = (
+                        result["order_inflow_15m"] * result["aisle_traffic_score"]
+                    ) / (result["aisle_width_avg"] + 1.0)
+                if {"intersection_count", "intersection_wait_time_avg", "congestion_score"}.issubset(result.columns):
+                    result["intersection_congestion_risk"] = (
+                        result["intersection_count"] * result["intersection_wait_time_avg"] * (1.0 + result["congestion_score"])
+                    )
+                if {"charge_queue_length", "charger_count", "one_way_ratio"}.issubset(result.columns):
+                    result["charger_detour_gap"] = (
+                        result["charge_queue_length"] * (1.0 + result["one_way_ratio"])
+                    ) / (result["charger_count"] + 1.0)
+
         if config.add_delay_risk_features:
             if {"order_inflow_15m", "urgent_order_ratio", "pack_utilization"}.issubset(result.columns):
                 result["urgent_pack_pressure"] = (
@@ -1031,6 +1082,7 @@ def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
             "add_bottleneck_features": config.secondary_add_bottleneck_features,
             "add_temporal_features": config.secondary_add_temporal_features,
             "add_congestion_features": config.secondary_add_congestion_features,
+            "layout_feature_set": config.secondary_layout_feature_set,
             "delay_risk_feature_set": config.secondary_delay_risk_feature_set,
             "target_weight_mode": config.secondary_target_weight_mode,
             "target_weight_strength": config.secondary_target_weight_strength,
