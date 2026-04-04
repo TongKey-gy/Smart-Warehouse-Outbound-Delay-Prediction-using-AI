@@ -222,3 +222,4 @@ python train.py
 - README 기록용 복사본은 `outputs/submissions_local/submission_xx.csv` 형식으로 로컬에만 저장됩니다.
 - 실험 로그는 `logs/results.csv`에 누적됩니다.
 - `train.py` 실행이 끝나면 README `실험기록` 표가 자동 갱신됩니다.
+- `train.py` 실행이 끝나면 포트폴리오용 Markdown 문서 `EXPERIMENT_PORTFOLIO.md`도 자동 갱신됩니다.

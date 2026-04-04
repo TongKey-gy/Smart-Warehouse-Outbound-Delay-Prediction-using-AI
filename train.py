@@ -84,6 +84,7 @@ CONFIG = {
 }
 
 README_PATH = Path(__file__).resolve().parent / "README.md"
+PORTFOLIO_LOG_PATH = Path(__file__).resolve().parent / "EXPERIMENT_PORTFOLIO.md"
 SUBMISSIONS_LOCAL_DIR = OUTPUTS_DIR / "submissions_local"
 EXPERIMENT_LOG_SECTION_TITLE = "## 실험기록"
 EXPERIMENT_LOG_START = "<!-- EXPERIMENT_LOG_START -->"
@@ -397,6 +398,230 @@ def build_experiment_records() -> list[dict[str, str]]:
         )
 
     return records
+
+
+def parse_config_json(raw_config: object) -> dict[str, object]:
+    if pd.isna(raw_config):
+        return {}
+    if isinstance(raw_config, dict):
+        return raw_config
+    try:
+        return json.loads(str(raw_config))
+    except json.JSONDecodeError:
+        return {}
+
+
+def format_bool_feature(name: str) -> str:
+    return name.removeprefix("add_").removesuffix("_features").replace("_", " ")
+
+
+def build_change_summary(row: pd.Series, config: dict[str, object]) -> str:
+    changes: list[str] = []
+    validation_type = config.get("validation_type")
+    if validation_type:
+        if validation_type == "group_kfold":
+            group_column = config.get("group_column", "group")
+            changes.append(f"validation: group k-fold on `{group_column}`")
+        else:
+            changes.append(f"validation: `{validation_type}`")
+
+    enabled_features = [
+        format_bool_feature(key)
+        for key, value in config.items()
+        if key.startswith("add_") and key.endswith("_features") and str(value).lower() == "true"
+    ]
+    if enabled_features:
+        changes.append("features: " + ", ".join(enabled_features))
+
+    if "use_layout_id" in config:
+        changes.append(
+            "layout_id: "
+            + ("enabled" if str(config.get("use_layout_id")).lower() == "true" else "disabled")
+        )
+    if "use_log_target" in config and str(config.get("use_log_target")).lower() == "true":
+        changes.append("target: log1p")
+    if "target_weight_mode" in config and str(config.get("target_weight_mode")).lower() != "none":
+        changes.append(
+            f"weighting: {config.get('target_weight_mode')} x {config.get('target_weight_strength')}"
+        )
+    if "blend_secondary_model" in config and str(config.get("blend_secondary_model")).lower() == "true":
+        changes.append(
+            "blend: secondary model "
+            f"(weight={config.get('secondary_weight')}, "
+            f"layout_id={config.get('secondary_use_layout_id')}, "
+            f"weighting={config.get('secondary_target_weight_mode')})"
+        )
+
+    hp_keys = ["learning_rate", "n_estimators", "num_leaves", "max_depth", "min_child_samples"]
+    hp_parts = [f"{key}={config[key]}" for key in hp_keys if key in config]
+    if hp_parts:
+        changes.append("hyperparameters: " + ", ".join(hp_parts))
+
+    return ". ".join(changes) + "." if changes else "Baseline training configuration."
+
+
+def prettify_experiment_title(row: pd.Series) -> str:
+    improvement = row.get("improvement_notes")
+    if isinstance(improvement, str) and improvement.strip() and improvement.strip() != "-":
+        text = improvement.strip()
+    else:
+        text = str(row.get("experiment_name", "experiment")).replace("_", " ").strip()
+    text = text[:1].upper() + text[1:]
+    return text.rstrip(".")
+
+
+def infer_objective(row: pd.Series, config: dict[str, object]) -> str:
+    improvement = row.get("improvement_notes")
+    if isinstance(improvement, str) and improvement.strip() and improvement.strip() != "-":
+        return f"{improvement.strip().rstrip('.') }를 검증해 교차검증 점수를 개선하는 것이 목적이었다."
+
+    experiment_name = str(row.get("experiment_name", "current setup")).replace("_", " ")
+    validation_type = config.get("validation_type", "current validation")
+    return f"{experiment_name} 설정을 평가해 `{validation_type}` 기준 일반화 성능 변화를 확인하는 것이 목적이었다."
+
+
+def infer_hypothesis(config: dict[str, object], row: pd.Series) -> str:
+    statements: list[str] = []
+    if str(config.get("use_log_target")).lower() == "true":
+        statements.append("타깃 분포의 긴 꼬리를 완화해 MAE를 안정화할 수 있다")
+    enabled_features = [
+        format_bool_feature(key)
+        for key, value in config.items()
+        if key.startswith("add_") and key.endswith("_features") and str(value).lower() == "true"
+    ]
+    if enabled_features:
+        statements.append(f"{', '.join(enabled_features)} 피처가 운영 병목을 더 직접적으로 설명할 수 있다")
+    if str(config.get("target_weight_mode", "none")).lower() != "none":
+        statements.append("고지연 샘플에 더 많은 학습 비중을 주면 tail 오차를 줄일 수 있다")
+    if str(config.get("blend_secondary_model", "false")).lower() == "true":
+        statements.append("편향이 다른 보조 모델을 섞으면 fold 분산을 줄일 수 있다")
+    if not statements:
+        statements.append("검증 설정이나 트리 구조 조정이 현재 기준보다 더 나은 일반화를 만들 수 있다")
+    return "가설은 " + "; ".join(statements) + "는 점이었다."
+
+
+def extract_experiment_number(row: pd.Series, fallback_number: int) -> int:
+    for key in ("experiment_name", "submission_alias"):
+        value = row.get(key)
+        if pd.isna(value):
+            continue
+        match = re.search(r"exp(\d+)|submission_(\d+)", str(value))
+        if match:
+            return int(next(group for group in match.groups() if group is not None))
+    return fallback_number
+
+
+def build_conclusion_text(current_score: float, previous_score: float | None) -> str:
+    if previous_score is None:
+        return "첫 기준 실험으로 사용한 설정이며, 이후 탐색의 출발점으로 삼을 수 있는 점수를 확보했다."
+    delta = current_score - previous_score
+    if delta < -0.01:
+        return f"이전 실험 대비 MAE가 {abs(delta):.6f} 개선되어 이 방향을 유지할 가치가 확인됐다."
+    if delta > 0.01:
+        return f"이전 실험 대비 MAE가 {delta:.6f} 악화되어 해당 변화는 과적합 또는 일반화 저하로 해석된다."
+    return f"이전 실험 대비 MAE 변화가 {delta:.6f}로 작아, 영향은 제한적이지만 후속 미세 조정 여지는 남았다."
+
+
+def build_next_step_text(current_score: float, previous_score: float | None, config: dict[str, object]) -> str:
+    if previous_score is None or current_score <= previous_score:
+        if str(config.get("blend_secondary_model", "false")).lower() == "true":
+            return "블렌드 비중이나 보조 모델 설정을 근처 값으로 조정해 추가 개선 가능성을 탐색한다."
+        if any(str(config.get(key)).lower() == "true" for key in config if key.startswith("add_") and key.endswith("_features")):
+            return "효과가 있었던 피처 축을 유지하고, 가중치나 트리 용량을 인접 값으로 미세 조정한다."
+        return "효과가 있었던 설정을 유지한 채 검증 방식이나 하이퍼파라미터를 한 단계씩 조정한다."
+    return "이번 변화는 되돌리고, 신호가 있었던 이전 설정을 기준으로 다른 피처 축이나 블렌드 방향을 검증한다."
+
+
+def render_portfolio_entry(
+    row: pd.Series,
+    config: dict[str, object],
+    fallback_number: int,
+    previous_score: float | None,
+) -> str:
+    experiment_number = extract_experiment_number(row, fallback_number)
+    score_value = row.get("oof_mae", row.get("mae_mean", row.get("oof_rmse", row.get("rmse_mean"))))
+    score_text = "-"
+    score_float: float | None = None
+    if not pd.isna(score_value):
+        score_float = float(score_value)
+        score_text = f"OOF MAE {score_float:.6f}"
+
+    objective = infer_objective(row, config)
+    change = build_change_summary(row, config)
+    hypothesis = infer_hypothesis(config, row)
+    conclusion = build_conclusion_text(score_float or float("nan"), previous_score) if score_float is not None else (
+        "점수 비교가 불가능한 실험이므로 결과는 기록하되 해석은 제한적으로 남긴다."
+    )
+    next_step = build_next_step_text(score_float or float("nan"), previous_score, config) if score_float is not None else (
+        "동일 설정을 재실행해 유효 점수를 확보하거나, 로그가 남는 실험으로 대체한다."
+    )
+
+    return "\n".join(
+        [
+            f"### Experiment {experiment_number:02d} — {prettify_experiment_title(row)}",
+            "",
+            "**Objective**",
+            objective,
+            "",
+            "**Change**",
+            change,
+            "",
+            "**Hypothesis**",
+            hypothesis,
+            "",
+            "**Result**",
+            score_text,
+            "",
+            "**Conclusion**",
+            conclusion,
+            "",
+            "**Next Step**",
+            next_step,
+        ]
+    )
+
+
+def update_portfolio_experiment_log() -> Path:
+    results_path = LOGS_DIR / "results.csv"
+    if not results_path.exists():
+        return PORTFOLIO_LOG_PATH
+
+    results_frame = pd.read_csv(results_path)
+    experiment_name_series = results_frame["experiment_name"].fillna("").astype(str)
+    is_portfolio_experiment = experiment_name_series.str.match(r"^(exp\d+_|default_)")
+    score_columns = ["oof_mae", "mae_mean", "oof_rmse", "rmse_mean"]
+    has_score = results_frame[score_columns].notna().any(axis=1)
+    results_frame = results_frame[
+        results_frame["submission_path"].notna() & is_portfolio_experiment & has_score
+    ].copy()
+    if results_frame.empty:
+        PORTFOLIO_LOG_PATH.write_text("# Experiment Portfolio\n", encoding="utf-8")
+        return PORTFOLIO_LOG_PATH
+
+    sortable_timestamp = results_frame["timestamp"].astype(str)
+    results_frame = results_frame.assign(_timestamp_sort=sortable_timestamp).sort_values("_timestamp_sort")
+
+    lines = [
+        "# Experiment Portfolio",
+        "",
+        "실험 로그를 포트폴리오 형식으로 자동 정리한 문서입니다.",
+        "",
+    ]
+
+    previous_score: float | None = None
+    portfolio_index = 1
+    for _, row in results_frame.iterrows():
+        config = parse_config_json(row.get("config_json"))
+        entry = render_portfolio_entry(row, config, portfolio_index, previous_score)
+        lines.append(entry)
+        lines.append("")
+        score_value = row.get("oof_mae", row.get("mae_mean", row.get("oof_rmse", row.get("rmse_mean"))))
+        if not pd.isna(score_value):
+            previous_score = float(score_value)
+        portfolio_index += 1
+
+    PORTFOLIO_LOG_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return PORTFOLIO_LOG_PATH
 
 
 def render_experiment_log_table(records: list[dict[str, str]]) -> str:
@@ -948,9 +1173,11 @@ def main() -> None:
     results_row["summary_path"] = str(summary_path.relative_to(Path.cwd()))
     results_path = append_results_log(results_row)
     records = update_readme_experiment_log()
+    portfolio_log_path = update_portfolio_experiment_log()
 
     print(f"Updated log: {results_path}")
     print(f"Updated README experiment log with {len(records)} records")
+    print(f"Updated portfolio experiment log: {portfolio_log_path}")
     print(f"Saved OOF predictions: {oof_path}")
     if importance_path is not None:
         print(f"Saved feature importance: {importance_path}")

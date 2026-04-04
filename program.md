@@ -84,6 +84,7 @@ The goal is to improve cross-validation performance on the Dacon Smart Warehouse
 ## 실험 기록 규칙
 
 - 모든 실험은 `README.md`의 `실험기록` 표에 기록한다
+- 모든 실험은 포트폴리오용 `EXPERIMENT_PORTFOLIO.md`에도 설명형 문장으로 기록한다
 - 제출 복사본은 `outputs/submissions_local/submission_xx.csv` 형식을 사용한다
 - 성능 점수는 `logs/results.csv` 또는 `metrics.json` 기준으로 기록한다
 - 성능 점수는 `OOF MAE`를 우선 기준으로 해석한다
