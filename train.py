@@ -41,27 +41,35 @@ BASE_EXCLUDED_FEATURE_COLUMNS = (
     "task_reassign_15m",
 )
 CONFIG = {
-    "experiment_name": "default_groupkfold_scenario_log_tuned_v2",
+    "experiment_name": "default_groupkfold_capacity_weighted_v1",
     "validation_type": "group_kfold",
     "group_column": "scenario_id",
     "use_layout_info": True,
-    "use_layout_id": True,
+    "use_layout_id": False,
     "use_scenario_id": False,
     "seed": 42,
     "n_splits": 5,
-    "n_estimators": 900,
-    "learning_rate": 0.03,
-    "num_leaves": 95,
-    "max_depth": 10,
-    "min_child_samples": 30,
+    "n_estimators": 1100,
+    "learning_rate": 0.025,
+    "num_leaves": 127,
+    "max_depth": 11,
+    "min_child_samples": 20,
     "subsample": 0.9,
-    "colsample_bytree": 0.9,
-    "reg_alpha": 0.05,
-    "reg_lambda": 0.05,
+    "colsample_bytree": 0.85,
+    "reg_alpha": 0.03,
+    "reg_lambda": 0.03,
+    "objective": "regression",
     "use_log_target": True,
     "add_robot_balance_features": False,
     "add_environment_features": False,
     "add_workload_features": False,
+    "add_capacity_features": True,
+    "add_temporal_features": False,
+    "add_congestion_features": False,
+    "add_layout_interaction_features": False,
+    "target_weight_mode": "log",
+    "target_weight_strength": 0.2,
+    "min_prediction": 0.0,
     "early_stopping_rounds": 30,
     "log_evaluation_period": 100,
 }
@@ -86,27 +94,35 @@ ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    experiment_name: str = "default_groupkfold_scenario_log_tuned_v2"
+    experiment_name: str = "default_groupkfold_capacity_weighted_v1"
     validation_type: str = "group_kfold"
     group_column: str = "scenario_id"
     use_layout_info: bool = True
-    use_layout_id: bool = True
+    use_layout_id: bool = False
     use_scenario_id: bool = False
     seed: int = 42
     n_splits: int = 5
-    n_estimators: int = 900
-    learning_rate: float = 0.03
-    num_leaves: int = 95
-    max_depth: int = 10
-    min_child_samples: int = 30
+    n_estimators: int = 1100
+    learning_rate: float = 0.025
+    num_leaves: int = 127
+    max_depth: int = 11
+    min_child_samples: int = 20
     subsample: float = 0.9
-    colsample_bytree: float = 0.9
-    reg_alpha: float = 0.05
-    reg_lambda: float = 0.05
+    colsample_bytree: float = 0.85
+    reg_alpha: float = 0.03
+    reg_lambda: float = 0.03
+    objective: str = "regression"
     use_log_target: bool = True
     add_robot_balance_features: bool = False
     add_environment_features: bool = False
     add_workload_features: bool = False
+    add_capacity_features: bool = True
+    add_temporal_features: bool = False
+    add_congestion_features: bool = False
+    add_layout_interaction_features: bool = False
+    target_weight_mode: str = "log"
+    target_weight_strength: float = 0.2
+    min_prediction: float = 0.0
     early_stopping_rounds: int = 30
     log_evaluation_period: int = 100
 
@@ -188,6 +204,7 @@ def build_model(config: ExperimentConfig, n_estimators: int | None = None) -> LG
         reg_alpha=config.reg_alpha,
         reg_lambda=config.reg_lambda,
         random_state=config.seed,
+        objective=config.objective,
         metric="rmse",
         verbose=-1,
     )
@@ -542,9 +559,82 @@ def add_engineered_features(
             if {"loading_dock_util", "staging_area_util"}.issubset(result.columns):
                 result["dock_staging_pressure"] = result["loading_dock_util"] * result["staging_area_util"]
 
+        if config.add_capacity_features:
+            if {"order_inflow_15m", "pack_station_count"}.issubset(result.columns):
+                result["orders_per_pack_station"] = result["order_inflow_15m"] / (result["pack_station_count"] + 1.0)
+            if {"order_inflow_15m", "charger_count"}.issubset(result.columns):
+                result["orders_per_charger"] = result["order_inflow_15m"] / (result["charger_count"] + 1.0)
+            if {"order_inflow_15m", "loading_dock_util"}.issubset(result.columns):
+                result["dock_load_pressure"] = result["order_inflow_15m"] * result["loading_dock_util"]
+            if {"order_inflow_15m", "pack_utilization"}.issubset(result.columns):
+                result["pack_load_pressure"] = result["order_inflow_15m"] * result["pack_utilization"]
+            if {"robot_active", "pack_station_count"}.issubset(result.columns):
+                result["robots_per_pack_station"] = result["robot_active"] / (result["pack_station_count"] + 1.0)
+            if {"charge_queue_length", "charger_count"}.issubset(result.columns):
+                result["charge_queue_per_charger"] = result["charge_queue_length"] / (result["charger_count"] + 1.0)
+
+        if config.add_temporal_features:
+            if "shift_hour" in result.columns:
+                shift_angle = 2.0 * np.pi * result["shift_hour"] / 24.0
+                result["shift_hour_sin"] = np.sin(shift_angle)
+                result["shift_hour_cos"] = np.cos(shift_angle)
+                result["is_night_shift"] = result["shift_hour"].isin([20, 21, 22, 23, 0, 1, 2, 3, 4, 5]).astype(float)
+                result["is_peak_shift"] = result["shift_hour"].isin([14, 15, 16, 17, 18, 19, 20, 21, 22]).astype(float)
+            if "day_of_week" in result.columns:
+                week_angle = 2.0 * np.pi * result["day_of_week"] / 7.0
+                result["day_of_week_sin"] = np.sin(week_angle)
+                result["day_of_week_cos"] = np.cos(week_angle)
+                result["is_weekend"] = result["day_of_week"].isin([5, 6]).astype(float)
+
+        if config.add_congestion_features:
+            if {"congestion_score", "avg_trip_distance"}.issubset(result.columns):
+                result["trip_congestion_pressure"] = result["congestion_score"] * result["avg_trip_distance"]
+            if {"blocked_path_15m", "near_collision_15m"}.issubset(result.columns):
+                result["path_disruption"] = result["blocked_path_15m"] + result["near_collision_15m"]
+            if {"max_zone_density", "zone_dispersion"}.issubset(result.columns):
+                result["zone_density_pressure"] = result["max_zone_density"] * result["zone_dispersion"]
+            if {"manual_override_ratio", "congestion_score"}.issubset(result.columns):
+                result["override_congestion_pressure"] = (
+                    result["manual_override_ratio"] * result["congestion_score"]
+                )
+
+        if config.add_layout_interaction_features:
+            if {"avg_trip_distance", "layout_compactness"}.issubset(result.columns):
+                result["trip_distance_layout_penalty"] = (
+                    result["avg_trip_distance"] * (1.0 - result["layout_compactness"])
+                )
+            if {"pack_station_count", "floor_area_sqm"}.issubset(result.columns):
+                result["pack_station_density"] = result["pack_station_count"] / (result["floor_area_sqm"] + 1.0)
+            if {"robot_total", "floor_area_sqm"}.issubset(result.columns):
+                result["robot_density"] = result["robot_total"] / (result["floor_area_sqm"] + 1.0)
+            if {"charger_count", "robot_total"}.issubset(result.columns):
+                result["charger_coverage"] = result["charger_count"] / (result["robot_total"] + 1.0)
+
         return result
 
     return transform(X_train), transform(X_test)
+
+
+def build_sample_weights(target: pd.Series, config: ExperimentConfig) -> np.ndarray | None:
+    mode = config.target_weight_mode.strip().lower()
+    strength = float(config.target_weight_strength)
+    if mode == "none" or strength <= 0.0:
+        return None
+
+    safe_target = np.clip(target.to_numpy(dtype=float), a_min=0.0, a_max=None)
+    if mode == "log":
+        weights = 1.0 + strength * np.log1p(safe_target)
+    elif mode == "sqrt":
+        weights = 1.0 + strength * np.sqrt(safe_target)
+    elif mode == "linear":
+        scale = float(np.mean(safe_target) + 1.0)
+        weights = 1.0 + strength * (safe_target / scale)
+    else:
+        raise ValueError(
+            "CONFIG['target_weight_mode'] must be one of: none, log, sqrt, linear."
+        )
+
+    return weights
 
 
 def resolve_cv_groups(prepared, config: ExperimentConfig) -> pd.Series | None:
@@ -603,6 +693,7 @@ def main() -> None:
     fold_mae_scores: list[float] = []
     fold_importances: list[pd.DataFrame] = []
     best_iterations: list[int] = []
+    sample_weights = build_sample_weights(prepared.y, config)
 
     for fold_idx, train_idx, valid_idx in split_iterator:
         X_fold_train = X_train.loc[train_idx]
@@ -617,9 +708,11 @@ def main() -> None:
         feature_names = get_feature_names(preprocessor)
 
         model = build_model(config)
+        fold_sample_weights = None if sample_weights is None else sample_weights[X_train.index.get_indexer(train_idx)]
         model.fit(
             X_fold_train_processed,
             y_fold_train,
+            sample_weight=fold_sample_weights,
             eval_set=[(X_fold_valid_processed, y_fold_valid_train_scale)],
             eval_metric="l1" if config.use_log_target else "mae",
             callbacks=[
@@ -633,6 +726,7 @@ def main() -> None:
         fold_pred = model.predict(X_fold_valid_processed, num_iteration=best_iteration)
         if config.use_log_target:
             fold_pred = np.expm1(fold_pred)
+        fold_pred = np.clip(fold_pred, a_min=config.min_prediction, a_max=None)
         oof_predictions.loc[valid_idx] = fold_pred
         fold_rmse = evaluate_rmse(y_fold_valid, fold_pred)
         fold_mae = evaluate_mae(y_fold_valid, fold_pred)
@@ -666,10 +760,11 @@ def main() -> None:
     X_train_processed = final_preprocessor.fit_transform(X_train)
     X_test_processed = final_preprocessor.transform(X_test)
     final_model = build_model(config, n_estimators=final_n_estimators)
-    final_model.fit(X_train_processed, train_target)
+    final_model.fit(X_train_processed, train_target, sample_weight=sample_weights)
     test_pred = final_model.predict(X_test_processed)
     if config.use_log_target:
         test_pred = np.expm1(test_pred)
+    test_pred = np.clip(test_pred, a_min=config.min_prediction, a_max=None)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = create_experiment_dir(config, timestamp)

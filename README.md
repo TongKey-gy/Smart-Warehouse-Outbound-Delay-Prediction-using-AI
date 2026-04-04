@@ -112,7 +112,7 @@ python train.py
 
 기본 Google Drive 링크를 바꾸고 싶으면 `OPEN_DATA_URL` 환경변수를 사용할 수 있습니다.
 
-현재 `train.py` 기본 설정은 `scenario_id group_kfold` 기준의 `layout_info + layout_id + log target + tuned trees` 조합입니다.
+현재 `train.py` 기본 설정은 `scenario_id group_kfold` 기준의 `layout_info + capacity ratios + log target + target weighting + tuned trees` 조합입니다.
 
 ## 베이스라인 동작 요약
 
@@ -188,6 +188,19 @@ python train.py
 | 55 | submission_55.csv | submission_exp55_group_scenario_robot_20260404_143733.csv | 2026-04-04 14:37:33 | exp55_group_scenario_robot | 9.845183 | groupkfold tuned trees plus robot balance features |
 | 56 | submission_56.csv | submission_exp56_group_scenario_env_workload_20260404_143826.csv | 2026-04-04 14:38:26 | exp56_group_scenario_env_workload | 9.838691 | groupkfold tuned trees plus environment and workload features |
 | 57 | submission_57.csv | submission_exp57_group_scenario_seed7_mid_deep_20260404_143916.csv | 2026-04-04 14:39:16 | exp57_group_scenario_seed7_mid_deep | 9.833067 | groupkfold mid depth larger leaves alternate seed |
+| 58 | submission_58.csv | submission_default_groupkfold_scenario_log_tuned_v2_20260404_144812.csv | 2026-04-04 14:48:12 | default_groupkfold_scenario_log_tuned_v2 | 9.217497 | - |
+| 59 | submission_59.csv | submission_exp59_group_log_clip_floor_20260404_145111.csv | 2026-04-04 14:51:11 | exp59_group_log_clip_floor | 9.217488 | clip negative predictions at zero for non-negative delay target |
+| 60 | submission_60.csv | submission_exp60_group_log_capacity_20260404_145211.csv | 2026-04-04 14:52:11 | exp60_group_log_capacity | 9.167677 | add capacity pressure ratios between inflow, pack stations, docks, and chargers |
+| 61 | submission_61.csv | submission_exp61_group_log_capacity_congestion_20260404_145307.csv | 2026-04-04 14:53:07 | exp61_group_log_capacity_congestion | 9.169492 | stack capacity pressure features with congestion interactions |
+| 62 | submission_62.csv | submission_exp62_group_log_capacity_temporal_20260404_145407.csv | 2026-04-04 14:54:07 | exp62_group_log_capacity_temporal | 9.169118 | combine capacity ratios with cyclical shift and weekday features |
+| 63 | submission_63.csv | submission_exp63_group_log_capacity_layout_20260404_145504.csv | 2026-04-04 14:55:04 | exp63_group_log_capacity_layout | 9.174876 | combine capacity ratios with layout density and charger coverage features |
+| 64 | submission_64.csv | submission_exp64_group_log_capacity_sqrt_weight_20260404_145606.csv | 2026-04-04 14:56:06 | exp64_group_log_capacity_sqrt_weight | 9.148250 | apply mild sqrt target weighting on top of capacity ratios to reduce tail underprediction |
+| 65 | submission_65.csv | submission_exp65_group_log_capacity_log_weight_20260404_145713.csv | 2026-04-04 14:57:13 | exp65_group_log_capacity_log_weight | 9.146279 | swap sqrt weighting for smoother log target weighting on capacity features |
+| 66 | submission_66.csv | submission_exp66_group_capacity_log_weight_mae_obj_20260404_145827.csv | 2026-04-04 14:58:27 | exp66_group_capacity_log_weight_mae_obj | 9.175939 | align objective with MAE while keeping best capacity and log-weight settings |
+| 67 | submission_67.csv | submission_exp67_group_capacity_log_weight_deeper_20260404_145944.csv | 2026-04-04 14:59:44 | exp67_group_capacity_log_weight_deeper | 9.145386 | increase tree capacity for the best capacity plus log-weight configuration |
+| 68 | submission_68.csv | submission_exp68_group_capacity_log_weight_deeper_relaxed_20260404_150112.csv | 2026-04-04 15:01:12 | exp68_group_capacity_log_weight_deeper_relaxed | 9.148869 | relax regularization and enlarge trees for the best weighted capacity setup |
+| 69 | submission_69.csv | submission_exp69_group_capacity_log_weight_deeper_no_layoutid_20260404_150231.csv | 2026-04-04 15:02:31 | exp69_group_capacity_log_weight_deeper_no_layoutid | 9.140415 | drop raw layout_id from the best weighted capacity setup to reduce layout-specific overfit |
+| 70 | submission_70.csv | submission_default_groupkfold_capacity_weighted_v1_20260404_150436.csv | 2026-04-04 15:04:36 | default_groupkfold_capacity_weighted_v1 | 9.140415 | - |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
