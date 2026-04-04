@@ -112,7 +112,7 @@ python train.py
 
 기본 Google Drive 링크를 바꾸고 싶으면 `OPEN_DATA_URL` 환경변수를 사용할 수 있습니다.
 
-현재 `train.py` 기본 설정은 `layout_info`를 유지한 `kfold + tuned trees + layout_id + log target` 조합입니다.
+현재 `train.py` 기본 설정은 `scenario_id group_kfold` 기준의 `layout_info + layout_id + log target + tuned trees` 조합입니다.
 
 ## 베이스라인 동작 요약
 
@@ -123,6 +123,8 @@ python train.py
 - 범주형 컬럼은 ordinal encoding
 - 수치형 컬럼은 median imputation
 - 기본 모델은 `LightGBMRegressor`
+- 리더보드 일반화와 맞추기 위해 기본 검증은 `scenario_id` 기준 `group_kfold`를 권장
+- 최근 10회 탐색(`submission_48.csv` ~ `submission_57.csv`) 중 최고 `OOF MAE`는 `submission_49.csv`의 `9.217497`이었다
 
 ## 실험기록
 
@@ -176,6 +178,16 @@ python train.py
 | 45 | submission_45.csv | submission_exp32_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_workload_20260404_134056.csv | 2026-04-04 13:40:56 | exp32_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_workload | 7.314872 | exp32_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_workload sweep around exp21 |
 | 46 | submission_46.csv | submission_exp33_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_envwork_20260404_134351.csv | 2026-04-04 13:43:51 | exp33_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_envwork | 7.314545 | exp33_lr003_leaf191_depth12_mc15_sub09_col09_ra0005_rl0005_envwork sweep around exp21 |
 | 47 | submission_47.csv | submission_exp34_lr0022_leaf223_depth14_mc8_sub095_col095_ra0_rl0_20260404_134830.csv | 2026-04-04 13:48:30 | exp34_lr0022_leaf223_depth14_mc8_sub095_col095_ra0_rl0 | 6.992231 | exp34_lr0022_leaf223_depth14_mc8_sub095_col095_ra0_rl0 sweep around exp21 |
+| 48 | submission_48.csv | submission_exp48_group_scenario_baseline_tuned_v1_20260404_143149.csv | 2026-04-04 14:31:49 | exp48_group_scenario_baseline_tuned_v1 | 9.843006 | groupkfold scenario baseline tuned v1 |
+| 49 | submission_49.csv | submission_exp49_group_scenario_baseline_tuned_log_20260404_143238.csv | 2026-04-04 14:32:38 | exp49_group_scenario_baseline_tuned_log | 9.217497 | groupkfold baseline tuned v1 with log target |
+| 50 | submission_50.csv | submission_exp50_group_scenario_compact_regularized_20260404_143315.csv | 2026-04-04 14:33:15 | exp50_group_scenario_compact_regularized | 9.863333 | groupkfold more regularized compact trees |
+| 51 | submission_51.csv | submission_exp51_group_scenario_mid_deep_20260404_143405.csv | 2026-04-04 14:34:05 | exp51_group_scenario_mid_deep | 9.839829 | groupkfold mid depth larger leaves |
+| 52 | submission_52.csv | submission_exp52_group_scenario_slow_large_20260404_143504.csv | 2026-04-04 14:35:04 | exp52_group_scenario_slow_large | 9.833989 | groupkfold slower larger model |
+| 53 | submission_53.csv | submission_exp53_group_scenario_no_layoutid_20260404_143552.csv | 2026-04-04 14:35:52 | exp53_group_scenario_no_layoutid | 9.831477 | groupkfold remove raw layout_id while keeping layout metadata |
+| 54 | submission_54.csv | submission_exp54_group_scenario_workload_20260404_143643.csv | 2026-04-04 14:36:43 | exp54_group_scenario_workload | 9.835349 | groupkfold tuned trees plus workload features |
+| 55 | submission_55.csv | submission_exp55_group_scenario_robot_20260404_143733.csv | 2026-04-04 14:37:33 | exp55_group_scenario_robot | 9.845183 | groupkfold tuned trees plus robot balance features |
+| 56 | submission_56.csv | submission_exp56_group_scenario_env_workload_20260404_143826.csv | 2026-04-04 14:38:26 | exp56_group_scenario_env_workload | 9.838691 | groupkfold tuned trees plus environment and workload features |
+| 57 | submission_57.csv | submission_exp57_group_scenario_seed7_mid_deep_20260404_143916.csv | 2026-04-04 14:39:16 | exp57_group_scenario_seed7_mid_deep | 9.833067 | groupkfold mid depth larger leaves alternate seed |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고

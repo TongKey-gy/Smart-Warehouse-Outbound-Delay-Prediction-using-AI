@@ -41,23 +41,23 @@ BASE_EXCLUDED_FEATURE_COLUMNS = (
     "task_reassign_15m",
 )
 CONFIG = {
-    "experiment_name": "default_kfold_tuned_log_layoutid_v3",
-    "validation_type": "kfold",
+    "experiment_name": "default_groupkfold_scenario_log_tuned_v2",
+    "validation_type": "group_kfold",
     "group_column": "scenario_id",
     "use_layout_info": True,
     "use_layout_id": True,
     "use_scenario_id": False,
     "seed": 42,
     "n_splits": 5,
-    "n_estimators": 1200,
-    "learning_rate": 0.025,
-    "num_leaves": 255,
-    "max_depth": 13,
-    "min_child_samples": 20,
+    "n_estimators": 900,
+    "learning_rate": 0.03,
+    "num_leaves": 95,
+    "max_depth": 10,
+    "min_child_samples": 30,
     "subsample": 0.9,
-    "colsample_bytree": 0.85,
-    "reg_alpha": 0.01,
-    "reg_lambda": 0.01,
+    "colsample_bytree": 0.9,
+    "reg_alpha": 0.05,
+    "reg_lambda": 0.05,
     "use_log_target": True,
     "add_robot_balance_features": False,
     "add_environment_features": False,
@@ -86,23 +86,23 @@ ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    experiment_name: str = "default_kfold_tuned_log_layoutid_v3"
-    validation_type: str = "kfold"
+    experiment_name: str = "default_groupkfold_scenario_log_tuned_v2"
+    validation_type: str = "group_kfold"
     group_column: str = "scenario_id"
     use_layout_info: bool = True
     use_layout_id: bool = True
     use_scenario_id: bool = False
     seed: int = 42
     n_splits: int = 5
-    n_estimators: int = 1200
-    learning_rate: float = 0.025
-    num_leaves: int = 255
-    max_depth: int = 13
-    min_child_samples: int = 20
+    n_estimators: int = 900
+    learning_rate: float = 0.03
+    num_leaves: int = 95
+    max_depth: int = 10
+    min_child_samples: int = 30
     subsample: float = 0.9
-    colsample_bytree: float = 0.85
-    reg_alpha: float = 0.01
-    reg_lambda: float = 0.01
+    colsample_bytree: float = 0.9
+    reg_alpha: float = 0.05
+    reg_lambda: float = 0.05
     use_log_target: bool = True
     add_robot_balance_features: bool = False
     add_environment_features: bool = False
