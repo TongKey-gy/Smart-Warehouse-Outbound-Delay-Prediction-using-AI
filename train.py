@@ -591,6 +591,14 @@ def render_portfolio_entry(
     )
 
 
+def normalize_portfolio_markdown(text: str) -> str:
+    normalized = text
+    normalized = re.sub(r"(?m)^Experiment (\d{2} — .+)$", r"### Experiment \1", normalized)
+    for label in ["Objective", "Change", "Hypothesis", "Result", "Conclusion", "Next Step"]:
+        normalized = re.sub(rf"(?m)^{re.escape(label)}$", f"**{label}**", normalized)
+    return normalized
+
+
 def update_portfolio_experiment_log() -> Path:
     results_path = LOGS_DIR / "results.csv"
     if not results_path.exists():
@@ -649,7 +657,8 @@ def update_portfolio_experiment_log() -> Path:
             previous_score = float(score_value)
         portfolio_index += 1
 
-    PORTFOLIO_LOG_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    portfolio_text = normalize_portfolio_markdown("\n".join(lines).rstrip() + "\n")
+    PORTFOLIO_LOG_PATH.write_text(portfolio_text, encoding="utf-8")
     return PORTFOLIO_LOG_PATH
 
 
