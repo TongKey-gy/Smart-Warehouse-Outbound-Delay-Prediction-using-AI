@@ -78,6 +78,7 @@ CONFIG = {
     "secondary_use_layout_id": True,
     "secondary_add_capacity_features": True,
     "secondary_add_bottleneck_features": True,
+    "secondary_add_temporal_features": False,
     "secondary_target_weight_mode": "none",
     "secondary_target_weight_strength": 0.0,
     "secondary_seed": 7,
@@ -143,6 +144,7 @@ class ExperimentConfig:
     secondary_use_layout_id: bool = True
     secondary_add_capacity_features: bool = True
     secondary_add_bottleneck_features: bool = True
+    secondary_add_temporal_features: bool = False
     secondary_target_weight_mode: str = "none"
     secondary_target_weight_strength: float = 0.0
     secondary_seed: int = 7
@@ -967,6 +969,7 @@ def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
             "use_layout_id": config.secondary_use_layout_id,
             "add_capacity_features": config.secondary_add_capacity_features,
             "add_bottleneck_features": config.secondary_add_bottleneck_features,
+            "add_temporal_features": config.secondary_add_temporal_features,
             "target_weight_mode": config.secondary_target_weight_mode,
             "target_weight_strength": config.secondary_target_weight_strength,
             "seed": config.secondary_seed,
