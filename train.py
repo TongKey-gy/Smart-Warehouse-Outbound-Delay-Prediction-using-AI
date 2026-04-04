@@ -41,7 +41,7 @@ BASE_EXCLUDED_FEATURE_COLUMNS = (
     "task_reassign_15m",
 )
 CONFIG = {
-    "experiment_name": "default_groupkfold_capacity_weighted_v1",
+    "experiment_name": "default_groupkfold_bottleneck_blend_v1",
     "validation_type": "group_kfold",
     "group_column": "scenario_id",
     "use_layout_info": True,
@@ -64,12 +64,21 @@ CONFIG = {
     "add_environment_features": False,
     "add_workload_features": False,
     "add_capacity_features": True,
+    "add_bottleneck_features": True,
     "add_temporal_features": False,
     "add_congestion_features": False,
     "add_layout_interaction_features": False,
     "target_weight_mode": "log",
     "target_weight_strength": 0.2,
     "min_prediction": 0.0,
+    "blend_secondary_model": True,
+    "secondary_weight": 0.35,
+    "secondary_use_layout_id": True,
+    "secondary_add_capacity_features": True,
+    "secondary_add_bottleneck_features": True,
+    "secondary_target_weight_mode": "none",
+    "secondary_target_weight_strength": 0.0,
+    "secondary_seed": 7,
     "early_stopping_rounds": 30,
     "log_evaluation_period": 100,
 }
@@ -94,7 +103,7 @@ ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    experiment_name: str = "default_groupkfold_capacity_weighted_v1"
+    experiment_name: str = "default_groupkfold_bottleneck_blend_v1"
     validation_type: str = "group_kfold"
     group_column: str = "scenario_id"
     use_layout_info: bool = True
@@ -117,12 +126,21 @@ class ExperimentConfig:
     add_environment_features: bool = False
     add_workload_features: bool = False
     add_capacity_features: bool = True
+    add_bottleneck_features: bool = True
     add_temporal_features: bool = False
     add_congestion_features: bool = False
     add_layout_interaction_features: bool = False
     target_weight_mode: str = "log"
     target_weight_strength: float = 0.2
     min_prediction: float = 0.0
+    blend_secondary_model: bool = True
+    secondary_weight: float = 0.35
+    secondary_use_layout_id: bool = True
+    secondary_add_capacity_features: bool = True
+    secondary_add_bottleneck_features: bool = True
+    secondary_target_weight_mode: str = "none"
+    secondary_target_weight_strength: float = 0.0
+    secondary_seed: int = 7
     early_stopping_rounds: int = 30
     log_evaluation_period: int = 100
 
@@ -573,6 +591,28 @@ def add_engineered_features(
             if {"charge_queue_length", "charger_count"}.issubset(result.columns):
                 result["charge_queue_per_charger"] = result["charge_queue_length"] / (result["charger_count"] + 1.0)
 
+        if config.add_bottleneck_features:
+            if {"blocked_path_15m", "robot_active"}.issubset(result.columns):
+                result["blocked_path_per_robot"] = result["blocked_path_15m"] / (result["robot_active"] + 1.0)
+            if {"blocked_path_15m", "avg_trip_distance"}.issubset(result.columns):
+                result["blocked_path_trip_pressure"] = result["blocked_path_15m"] / (result["avg_trip_distance"] + 1.0)
+            if {"outbound_truck_wait_min", "loading_dock_util"}.issubset(result.columns):
+                result["truck_wait_per_dock_util"] = result["outbound_truck_wait_min"] / (
+                    result["loading_dock_util"] + 0.1
+                )
+            if {"congestion_score", "robot_active"}.issubset(result.columns):
+                result["congestion_per_robot"] = result["congestion_score"] / (result["robot_active"] + 1.0)
+            if {"charge_queue_length", "robot_active"}.issubset(result.columns):
+                result["charge_queue_per_robot"] = result["charge_queue_length"] / (result["robot_active"] + 1.0)
+            if {"label_print_queue", "staff_on_floor"}.issubset(result.columns):
+                result["labels_per_staff"] = result["label_print_queue"] / (result["staff_on_floor"] + 1.0)
+            if {"order_inflow_15m", "blocked_path_15m"}.issubset(result.columns):
+                result["inflow_blocked_pressure"] = result["order_inflow_15m"] * (result["blocked_path_15m"] + 1.0)
+            if {"order_inflow_15m", "congestion_score"}.issubset(result.columns):
+                result["inflow_congestion_pressure"] = result["order_inflow_15m"] * (
+                    result["congestion_score"] + 1.0
+                )
+
         if config.add_temporal_features:
             if "shift_hour" in result.columns:
                 shift_angle = 2.0 * np.pi * result["shift_hour"] / 24.0
@@ -637,63 +677,37 @@ def build_sample_weights(target: pd.Series, config: ExperimentConfig) -> np.ndar
     return weights
 
 
-def resolve_cv_groups(prepared, config: ExperimentConfig) -> pd.Series | None:
-    if config.validation_type != "group_kfold":
-        return None
-    if not config.group_column:
-        raise ValueError("CONFIG['group_column'] must be set when validation_type is 'group_kfold'.")
-    if config.group_column not in prepared.train_df.columns:
-        raise ValueError(f"Group column '{config.group_column}' is not available in train data.")
-    return prepared.train_df.loc[prepared.X_train.index, config.group_column].copy()
+def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
+    return ExperimentConfig(
+        **{
+            **asdict(config),
+            "use_layout_id": config.secondary_use_layout_id,
+            "add_capacity_features": config.secondary_add_capacity_features,
+            "add_bottleneck_features": config.secondary_add_bottleneck_features,
+            "target_weight_mode": config.secondary_target_weight_mode,
+            "target_weight_strength": config.secondary_target_weight_strength,
+            "seed": config.secondary_seed,
+        }
+    )
 
 
-def iter_train_cv_splits(prepared, config: ExperimentConfig) -> tuple[str, int, Iterator[tuple[int, pd.Index, pd.Index]]]:
-    index = prepared.X_train.index
-    if config.validation_type not in {"group_kfold", "kfold"}:
-        raise ValueError("CONFIG['validation_type'] must be either 'group_kfold' or 'kfold'.")
-
-    if config.validation_type == "group_kfold":
-        groups = resolve_cv_groups(prepared, config)
-        assert groups is not None
-        unique_groups = int(groups.nunique(dropna=False))
-        n_splits = min(config.n_splits, unique_groups)
-        if n_splits < 2:
-            raise ValueError("At least two unique groups are required for group_kfold validation.")
-        splitter = GroupKFold(n_splits=n_splits)
-        split_iter = splitter.split(prepared.X_train, prepared.y, groups=groups)
-    else:
-        n_splits = min(config.n_splits, len(index))
-        if n_splits < 2:
-            raise ValueError("At least two folds are required for kfold validation.")
-        splitter = KFold(n_splits=n_splits, shuffle=True, random_state=config.seed)
-        split_iter = splitter.split(prepared.X_train, prepared.y)
-
-    def generate() -> Iterator[tuple[int, pd.Index, pd.Index]]:
-        for fold_idx, (train_idx, valid_idx) in enumerate(split_iter, start=1):
-            yield fold_idx, index[train_idx], index[valid_idx]
-
-    return config.validation_type, n_splits, generate()
-
-
-def main() -> None:
-    ensure_runtime_directories()
-    ensure_local_submission_dir()
-    prepared = load_prepared_data()
-    config = load_config()
-    improvement_notes = os.environ.get("TRAIN_IMPROVEMENT_NOTES", "-").strip() or "-"
-    X_train, X_test, numeric_columns, categorical_columns, excluded_columns = select_training_view(prepared, config)
+def train_single_model(
+    prepared,
+    config: ExperimentConfig,
+) -> tuple[pd.Series, np.ndarray, list[float], list[float], list[pd.DataFrame], list[int], list[str], list[str]]:
+    X_train, X_test, numeric_columns, categorical_columns, _ = select_training_view(prepared, config)
     X_train, X_test = add_engineered_features(X_train, X_test, config)
     numeric_columns = X_train.select_dtypes(include=["number"]).columns.tolist()
     categorical_columns = [column for column in X_train.columns if column not in numeric_columns]
-    cv_strategy, actual_n_splits, split_iterator = iter_train_cv_splits(prepared, config)
+    _, _, split_iterator = iter_train_cv_splits(prepared, config)
     train_target = np.log1p(prepared.y) if config.use_log_target else prepared.y.copy()
+    sample_weights = build_sample_weights(prepared.y, config)
 
     oof_predictions = pd.Series(index=X_train.index, dtype=float)
     fold_rmse_scores: list[float] = []
     fold_mae_scores: list[float] = []
     fold_importances: list[pd.DataFrame] = []
     best_iterations: list[int] = []
-    sample_weights = build_sample_weights(prepared.y, config)
 
     for fold_idx, train_idx, valid_idx in split_iterator:
         X_fold_train = X_train.loc[train_idx]
@@ -741,8 +755,132 @@ def main() -> None:
                 }
             )
         )
+        print(f"Fold {fold_idx}: MAE={fold_mae:.6f} RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}")
+
+    final_n_estimators = max(1, int(round(float(np.mean(best_iterations)))))
+    final_preprocessor = build_preprocessor(numeric_columns, categorical_columns)
+    X_train_processed = final_preprocessor.fit_transform(X_train)
+    X_test_processed = final_preprocessor.transform(X_test)
+    final_model = build_model(config, n_estimators=final_n_estimators)
+    final_model.fit(X_train_processed, train_target, sample_weight=sample_weights)
+    test_pred = final_model.predict(X_test_processed)
+    if config.use_log_target:
+        test_pred = np.expm1(test_pred)
+    test_pred = np.clip(test_pred, a_min=config.min_prediction, a_max=None)
+
+    return (
+        oof_predictions,
+        test_pred,
+        fold_rmse_scores,
+        fold_mae_scores,
+        fold_importances,
+        best_iterations,
+        X_train.columns.tolist(),
+        [column for column in get_excluded_feature_columns(prepared, config) if column in prepared.feature_columns],
+    )
+
+
+def resolve_cv_groups(prepared, config: ExperimentConfig) -> pd.Series | None:
+    if config.validation_type != "group_kfold":
+        return None
+    if not config.group_column:
+        raise ValueError("CONFIG['group_column'] must be set when validation_type is 'group_kfold'.")
+    if config.group_column not in prepared.train_df.columns:
+        raise ValueError(f"Group column '{config.group_column}' is not available in train data.")
+    return prepared.train_df.loc[prepared.X_train.index, config.group_column].copy()
+
+
+def iter_train_cv_splits(prepared, config: ExperimentConfig) -> tuple[str, int, Iterator[tuple[int, pd.Index, pd.Index]]]:
+    index = prepared.X_train.index
+    if config.validation_type not in {"group_kfold", "kfold"}:
+        raise ValueError("CONFIG['validation_type'] must be either 'group_kfold' or 'kfold'.")
+
+    if config.validation_type == "group_kfold":
+        groups = resolve_cv_groups(prepared, config)
+        assert groups is not None
+        unique_groups = int(groups.nunique(dropna=False))
+        n_splits = min(config.n_splits, unique_groups)
+        if n_splits < 2:
+            raise ValueError("At least two unique groups are required for group_kfold validation.")
+        splitter = GroupKFold(n_splits=n_splits)
+        split_iter = splitter.split(prepared.X_train, prepared.y, groups=groups)
+    else:
+        n_splits = min(config.n_splits, len(index))
+        if n_splits < 2:
+            raise ValueError("At least two folds are required for kfold validation.")
+        splitter = KFold(n_splits=n_splits, shuffle=True, random_state=config.seed)
+        split_iter = splitter.split(prepared.X_train, prepared.y)
+
+    def generate() -> Iterator[tuple[int, pd.Index, pd.Index]]:
+        for fold_idx, (train_idx, valid_idx) in enumerate(split_iter, start=1):
+            yield fold_idx, index[train_idx], index[valid_idx]
+
+    return config.validation_type, n_splits, generate()
+
+
+def main() -> None:
+    ensure_runtime_directories()
+    ensure_local_submission_dir()
+    prepared = load_prepared_data()
+    config = load_config()
+    improvement_notes = os.environ.get("TRAIN_IMPROVEMENT_NOTES", "-").strip() or "-"
+    cv_strategy, actual_n_splits, split_iterator = iter_train_cv_splits(prepared, config)
+    del split_iterator
+    (
+        primary_oof,
+        primary_test_pred,
+        primary_fold_rmse_scores,
+        primary_fold_mae_scores,
+        primary_fold_importances,
+        primary_best_iterations,
+        feature_columns,
+        excluded_columns,
+    ) = train_single_model(prepared, config)
+
+    oof_predictions = primary_oof
+    test_pred = primary_test_pred
+    fold_rmse_scores = primary_fold_rmse_scores
+    fold_mae_scores = primary_fold_mae_scores
+    fold_importances = primary_fold_importances
+    best_iterations = primary_best_iterations
+
+    blend_notes = ""
+    if config.blend_secondary_model:
+        secondary_config = make_secondary_config(config)
         print(
-            f"Fold {fold_idx}: MAE={fold_mae:.6f} RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}"
+            "Training secondary blend model with "
+            f"use_layout_id={secondary_config.use_layout_id} "
+            f"target_weight_mode={secondary_config.target_weight_mode} "
+            f"seed={secondary_config.seed}"
+        )
+        (
+            secondary_oof,
+            secondary_test_pred,
+            _secondary_fold_rmse_scores,
+            _secondary_fold_mae_scores,
+            secondary_fold_importances,
+            secondary_best_iterations,
+            _secondary_feature_columns,
+            _secondary_excluded_columns,
+        ) = train_single_model(prepared, secondary_config)
+        secondary_weight = float(np.clip(config.secondary_weight, 0.0, 1.0))
+        primary_weight = 1.0 - secondary_weight
+        oof_predictions = (primary_weight * primary_oof) + (secondary_weight * secondary_oof)
+        test_pred = (primary_weight * primary_test_pred) + (secondary_weight * secondary_test_pred)
+        fold_importances.extend(secondary_fold_importances)
+        best_iterations.extend(secondary_best_iterations)
+        fold_rmse_scores = []
+        fold_mae_scores = []
+        _, _, split_iterator = iter_train_cv_splits(prepared, config)
+        for _fold_idx, _train_idx, valid_idx in split_iterator:
+            fold_pred = oof_predictions.loc[valid_idx]
+            y_fold_valid = prepared.y.loc[valid_idx]
+            fold_rmse_scores.append(evaluate_rmse(y_fold_valid, fold_pred))
+            fold_mae_scores.append(evaluate_mae(y_fold_valid, fold_pred))
+        blend_notes = (
+            f" | blend_secondary_model weight={secondary_weight:.2f} "
+            f"secondary_use_layout_id={secondary_config.use_layout_id} "
+            f"secondary_target_weight_mode={secondary_config.target_weight_mode}"
         )
 
     oof_rmse = evaluate_rmse(prepared.y.loc[oof_predictions.index], oof_predictions.loc[prepared.y.index])
@@ -755,16 +893,6 @@ def main() -> None:
         f"OOF_RMSE={oof_rmse:.6f} "
         f"FINAL_N_ESTIMATORS={final_n_estimators}"
     )
-
-    final_preprocessor = build_preprocessor(numeric_columns, categorical_columns)
-    X_train_processed = final_preprocessor.fit_transform(X_train)
-    X_test_processed = final_preprocessor.transform(X_test)
-    final_model = build_model(config, n_estimators=final_n_estimators)
-    final_model.fit(X_train_processed, train_target, sample_weight=sample_weights)
-    test_pred = final_model.predict(X_test_processed)
-    if config.use_log_target:
-        test_pred = np.expm1(test_pred)
-    test_pred = np.clip(test_pred, a_min=config.min_prediction, a_max=None)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = create_experiment_dir(config, timestamp)
@@ -786,9 +914,9 @@ def main() -> None:
         "cv_strategy": cv_strategy,
         "group_column": config.group_column if cv_strategy == "group_kfold" else "-",
         "n_splits": actual_n_splits,
-        "n_train_rows": len(X_train),
-        "n_test_rows": len(X_test),
-        "n_features": len(X_train.columns),
+        "n_train_rows": len(oof_predictions),
+        "n_test_rows": len(prepared.X_test),
+        "n_features": len(feature_columns),
         "excluded_features": "|".join(excluded_columns),
         "metric_name": "mae",
         "mae_mean": float(np.mean(fold_mae_scores)),
@@ -801,7 +929,7 @@ def main() -> None:
         "best_iteration_std": float(np.std(best_iterations)),
         "final_n_estimators": final_n_estimators,
         "model_name": config.experiment_name,
-        "improvement_notes": improvement_notes,
+        "improvement_notes": improvement_notes + blend_notes,
         "config_json": json.dumps(asdict(config), sort_keys=True),
         "submission_path": str(submission_path.relative_to(Path.cwd())),
         "submission_alias": format_submission_alias(submission_number),

@@ -112,7 +112,7 @@ python train.py
 
 기본 Google Drive 링크를 바꾸고 싶으면 `OPEN_DATA_URL` 환경변수를 사용할 수 있습니다.
 
-현재 `train.py` 기본 설정은 `scenario_id group_kfold` 기준의 `layout_info + capacity ratios + log target + target weighting + tuned trees` 조합입니다.
+현재 `train.py` 기본 설정은 `scenario_id group_kfold` 기준의 `capacity ratios + bottleneck ratios + log target + target weighting + layout-aware blend` 조합입니다.
 
 ## 베이스라인 동작 요약
 
@@ -201,6 +201,18 @@ python train.py
 | 68 | submission_68.csv | submission_exp68_group_capacity_log_weight_deeper_relaxed_20260404_150112.csv | 2026-04-04 15:01:12 | exp68_group_capacity_log_weight_deeper_relaxed | 9.148869 | relax regularization and enlarge trees for the best weighted capacity setup |
 | 69 | submission_69.csv | submission_exp69_group_capacity_log_weight_deeper_no_layoutid_20260404_150231.csv | 2026-04-04 15:02:31 | exp69_group_capacity_log_weight_deeper_no_layoutid | 9.140415 | drop raw layout_id from the best weighted capacity setup to reduce layout-specific overfit |
 | 70 | submission_70.csv | submission_default_groupkfold_capacity_weighted_v1_20260404_150436.csv | 2026-04-04 15:04:36 | default_groupkfold_capacity_weighted_v1 | 9.140415 | - |
+| 71 | submission_71.csv | submission_exp71_capacity_weighted_bottleneck_v1_20260404_151420.csv | 2026-04-04 15:14:20 | exp71_capacity_weighted_bottleneck_v1 | 9.126865 | add bottleneck ratio features from blocked paths, truck wait, queues, and staffing pressure |
+| 72 | submission_72.csv | submission_exp72_bottleneck_logweight_025_20260404_151543.csv | 2026-04-04 15:15:43 | exp72_bottleneck_logweight_025 | 9.131888 | raise log target weighting strength on top of bottleneck features |
+| 73 | submission_73.csv | submission_exp73_bottleneck_logweight_015_20260404_151656.csv | 2026-04-04 15:16:56 | exp73_bottleneck_logweight_015 | 9.128075 | lower log target weighting after adding bottleneck features |
+| 74 | submission_74.csv | submission_exp74_bottleneck_deeper_v1_20260404_151827.csv | 2026-04-04 15:18:27 | exp74_bottleneck_deeper_v1 | 9.141117 | increase tree capacity for bottleneck ratio features |
+| 75 | submission_75.csv | submission_exp75_bottleneck_blend_layoutid_unweighted_20260404_152042.csv | 2026-04-04 15:20:42 | exp75_bottleneck_blend_layoutid_unweighted | 9.120463 | blend weighted no-layoutid model with unweighted layoutid model | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 76 | submission_76.csv | submission_exp76_bottleneck_blend_layoutid_unweighted_w15_20260404_152256.csv | 2026-04-04 15:22:56 | exp76_bottleneck_blend_layoutid_unweighted_w15 | 9.122095 | reduce secondary layoutid blend weight to 0.15 | blend_secondary_model weight=0.15 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 77 | submission_77.csv | submission_exp77_bottleneck_blend_unweighted_only_20260404_152506.csv | 2026-04-04 15:25:06 | exp77_bottleneck_blend_unweighted_only | 9.121387 | blend weighted bottleneck model with unweighted no-layoutid model | blend_secondary_model weight=0.25 secondary_use_layout_id=False secondary_target_weight_mode=none |
+| 78 | submission_78.csv | submission_exp78_bottleneck_blend_simple_secondary_20260404_152801.csv | 2026-04-04 15:28:01 | exp78_bottleneck_blend_simple_secondary | 9.120463 | blend bottleneck primary with simpler layoutid secondary baseline | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 79 | submission_79.csv | submission_exp78_bottleneck_blend_simple_secondary_20260404_152827.csv | 2026-04-04 15:28:27 | exp78_bottleneck_blend_simple_secondary | 9.122371 | blend bottleneck primary with simpler capacity-only layoutid secondary model | blend_secondary_model weight=0.25 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 80 | submission_80.csv | submission_exp79_bottleneck_blend_layoutid_unweighted_w35_20260404_153045.csv | 2026-04-04 15:30:45 | exp79_bottleneck_blend_layoutid_unweighted_w35 | 9.120201 | increase layoutid secondary blend weight to 0.35 | blend_secondary_model weight=0.35 secondary_use_layout_id=True secondary_target_weight_mode=none |
+| 81 | submission_81.csv | submission_exp80_bottleneck_blend_layoutid_softweighted_20260404_153306.csv | 2026-04-04 15:33:06 | exp80_bottleneck_blend_layoutid_softweighted | 9.121146 | use lightly weighted layoutid secondary model in the best bottleneck blend | blend_secondary_model weight=0.35 secondary_use_layout_id=True secondary_target_weight_mode=log |
+| 82 | submission_82.csv | submission_default_groupkfold_bottleneck_blend_v1_20260404_153545.csv | 2026-04-04 15:35:45 | default_groupkfold_bottleneck_blend_v1 | 9.120201 | - | blend_secondary_model weight=0.35 secondary_use_layout_id=True secondary_target_weight_mode=none |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
