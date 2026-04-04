@@ -44,6 +44,7 @@ CONFIG = {
     "experiment_name": "baseline_lightgbm_rmse_v4",
     "validation_type": "group_kfold",
     "group_column": "scenario_id",
+    "use_layout_info": True,
     "use_layout_id": False,
     "use_scenario_id": False,
     "seed": 42,
@@ -88,6 +89,7 @@ class ExperimentConfig:
     experiment_name: str = "baseline_lightgbm_rmse_v4"
     validation_type: str = "group_kfold"
     group_column: str = "scenario_id"
+    use_layout_info: bool = True
     use_layout_id: bool = False
     use_scenario_id: bool = False
     seed: int = 42
@@ -115,20 +117,19 @@ def _parse_bool(raw_value: str) -> bool:
 
 def load_config() -> ExperimentConfig:
     values = dict(CONFIG)
-    field_types = {name: field_info.type for name, field_info in ExperimentConfig.__dataclass_fields__.items()}
 
-    for name, field_type in field_types.items():
+    for name, default_value in CONFIG.items():
         env_key = f"TRAIN_{name.upper()}"
         raw_value = os.environ.get(env_key)
         if raw_value is None:
             continue
 
-        if field_type is int:
-            values[name] = int(raw_value)
-        elif field_type is float:
-            values[name] = float(raw_value)
-        elif field_type is bool:
+        if isinstance(default_value, bool):
             values[name] = _parse_bool(raw_value)
+        elif isinstance(default_value, int):
+            values[name] = int(raw_value)
+        elif isinstance(default_value, float):
+            values[name] = float(raw_value)
         else:
             values[name] = raw_value
 
@@ -443,6 +444,7 @@ def save_feature_importance(fold_importances: list[pd.DataFrame], experiment_dir
 
 
 def save_experiment_summary(
+    prepared,
     config: ExperimentConfig,
     fold_rmse_scores: list[float],
     fold_mae_scores: list[float],
@@ -453,7 +455,7 @@ def save_experiment_summary(
     summary_path = experiment_dir / "metrics.json"
     payload = {
         "config": asdict(config),
-        "excluded_feature_columns": list(get_excluded_feature_columns(config)),
+        "excluded_feature_columns": list(get_excluded_feature_columns(prepared, config)),
         "fold_rmse_scores": fold_rmse_scores,
         "fold_mae_scores": fold_mae_scores,
         "best_iterations": best_iterations,
@@ -470,20 +472,30 @@ def get_model_best_iteration(model: LGBMRegressor, config: ExperimentConfig) -> 
     return int(best_iteration)
 
 
-def get_excluded_feature_columns(config: ExperimentConfig) -> list[str]:
+def get_layout_metadata_columns(prepared) -> list[str]:
+    return [
+        column
+        for column in prepared.layout_df.columns
+        if column != "layout_id" and column in prepared.feature_columns
+    ]
+
+
+def get_excluded_feature_columns(prepared, config: ExperimentConfig) -> list[str]:
     excluded_columns = list(BASE_EXCLUDED_FEATURE_COLUMNS)
+    if not config.use_layout_info:
+        excluded_columns.extend(get_layout_metadata_columns(prepared))
     if not config.use_layout_id:
         excluded_columns.append("layout_id")
     if not config.use_scenario_id:
         excluded_columns.append("scenario_id")
-    return excluded_columns
+    return list(dict.fromkeys(excluded_columns))
 
 
 def select_training_view(
     prepared,
     config: ExperimentConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str]]:
-    excluded_feature_columns = get_excluded_feature_columns(config)
+    excluded_feature_columns = get_excluded_feature_columns(prepared, config)
     selected_columns = [
         column for column in prepared.feature_columns if column not in excluded_feature_columns
     ]
@@ -702,6 +714,7 @@ def main() -> None:
         "experiment_dir": str(experiment_dir.relative_to(Path.cwd())),
     }
     summary_path = save_experiment_summary(
+        prepared,
         config,
         fold_rmse_scores,
         fold_mae_scores,
