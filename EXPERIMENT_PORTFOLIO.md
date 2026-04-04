@@ -1,4 +1,17 @@
-Experiment Log
+# Smart Warehouse Experiment Portfolio
+
+스마트 창고 출고 지연 예측 실험을 포트폴리오 형식으로 정리한 문서입니다.
+
+## Overview
+
+- 각 실험은 `Objective`, `Change`, `Hypothesis`, `Result`, `Conclusion`, `Next Step` 순서로 기록합니다.
+- 문장 내용은 실행 로그를 바탕으로 자동 생성되며, 실험 번호 순서대로 누적됩니다.
+- 아래 섹션은 실험 흐름을 읽기 쉽도록 단계별로만 구분합니다.
+
+## Phase 1
+
+Foundations
+
 Experiment 01 — Baseline scenario groupkfold MAE tracking
 
 Objective
@@ -158,7 +171,10 @@ Conclusion
 Next Step
 효과가 있었던 피처 축을 유지하고, 가중치나 트리 용량을 인접 값으로 미세 조정한다.
 
----
+## Phase 2
+
+KFold Expansion
+
 Experiment 11 — Kfold tuned trees without layout_info metadata
 
 Objective
@@ -542,7 +558,10 @@ Conclusion
 Next Step
 효과가 있었던 설정을 유지한 채 검증 방식이나 하이퍼파라미터를 한 단계씩 조정한다.
 
----
+## Phase 3
+
+GroupKFold Stabilization
+
 Experiment 48 — Groupkfold scenario baseline tuned v1
 
 Objective
@@ -910,7 +929,10 @@ Conclusion
 Next Step
 효과가 있었던 피처 축을 유지하고, 가중치나 트리 용량을 인접 값으로 미세 조정한다.
 
----
+## Phase 4
+
+Bottleneck and Blend Optimization
+
 Experiment 71 — Add bottleneck ratio features from blocked paths, truck wait, queues, and staffing pressure
 
 Objective
