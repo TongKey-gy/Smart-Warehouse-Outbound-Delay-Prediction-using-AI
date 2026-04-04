@@ -1,0 +1,43 @@
+"""Adaptive congestion-mix strategy state for the next training run."""
+
+ITERATION = 10
+ANALYSIS = '직전 실험 `adaptive_congestion_mix_09`의 OOF MAE는 9.110202, fold std는 0.237354였다. baseline 대비 변화는 +0.002720, 평균 residual은 3.3566, tail residual 평균은 163.8171다. 세션 최고는 `adaptive_congestion_mix_04`의 9.107735다.'
+PROPOSAL = '`adaptive_gkf_01` 블렌드는 유지한 채 주모델에만 congestion을 추가하고 `num_leaves=95`, `min_child_samples=28`, `target_weight_strength=0.30`로 복잡도를 낮춘다. secondary_weight=0.22, secondary_use_layout_id=True로 과적합 완화를 함께 확인한다.'
+CURRENT_STRATEGY = {
+    'validation_type': 'group_kfold',
+    'group_column': 'scenario_id',
+    'use_layout_info': True,
+    'use_layout_id': False,
+    'use_scenario_id': False,
+    'seed': 42,
+    'n_splits': 5,
+    'n_estimators': 1100,
+    'learning_rate': 0.023,
+    'num_leaves': 95,
+    'max_depth': 11,
+    'min_child_samples': 28,
+    'subsample': 0.92,
+    'colsample_bytree': 0.88,
+    'reg_alpha': 0.03,
+    'reg_lambda': 0.03,
+    'objective': 'regression',
+    'objective_alpha': 0.9,
+    'use_log_target': True,
+    'add_capacity_features': True,
+    'add_bottleneck_features': True,
+    'add_congestion_features': True,
+    'add_temporal_features': False,
+    'add_delay_risk_features': True,
+    'target_weight_mode': 'log',
+    'target_weight_strength': 0.3,
+    'blend_secondary_model': True,
+    'secondary_weight': 0.22,
+    'secondary_use_layout_id': True,
+    'secondary_add_capacity_features': True,
+    'secondary_add_bottleneck_features': True,
+    'secondary_add_congestion_features': False,
+    'secondary_target_weight_mode': 'none',
+    'secondary_target_weight_strength': 0.0,
+    'secondary_seed': 7,
+    'experiment_name': 'adaptive_congestion_mix_10',
+}
