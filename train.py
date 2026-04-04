@@ -68,9 +68,11 @@ CONFIG = {
     "add_temporal_features": False,
     "add_congestion_features": False,
     "add_layout_interaction_features": False,
+    "add_delay_risk_features": False,
     "target_weight_mode": "log",
     "target_weight_strength": 0.2,
     "min_prediction": 0.0,
+    "objective_alpha": 0.9,
     "blend_secondary_model": True,
     "secondary_weight": 0.35,
     "secondary_use_layout_id": True,
@@ -131,9 +133,11 @@ class ExperimentConfig:
     add_temporal_features: bool = False
     add_congestion_features: bool = False
     add_layout_interaction_features: bool = False
+    add_delay_risk_features: bool = False
     target_weight_mode: str = "log"
     target_weight_strength: float = 0.2
     min_prediction: float = 0.0
+    objective_alpha: float = 0.9
     blend_secondary_model: bool = True
     secondary_weight: float = 0.35
     secondary_use_layout_id: bool = True
@@ -195,7 +199,6 @@ def build_preprocessor(numeric_columns: list[str], categorical_columns: list[str
                             OrdinalEncoder(
                                 handle_unknown="use_encoded_value",
                                 unknown_value=-1,
-                                encoded_missing_value=-1,
                             ),
                         ),
                     ]
@@ -207,26 +210,28 @@ def build_preprocessor(numeric_columns: list[str], categorical_columns: list[str
     return ColumnTransformer(
         transformers=transformers,
         remainder="drop",
-        verbose_feature_names_out=False,
     )
 
 
 def build_model(config: ExperimentConfig, n_estimators: int | None = None) -> LGBMRegressor:
-    return LGBMRegressor(
-        n_estimators=n_estimators or config.n_estimators,
-        learning_rate=config.learning_rate,
-        max_depth=config.max_depth,
-        num_leaves=config.num_leaves,
-        subsample=config.subsample,
-        colsample_bytree=config.colsample_bytree,
-        min_child_samples=config.min_child_samples,
-        reg_alpha=config.reg_alpha,
-        reg_lambda=config.reg_lambda,
-        random_state=config.seed,
-        objective=config.objective,
-        metric="rmse",
-        verbose=-1,
-    )
+    model_kwargs = {
+        "n_estimators": n_estimators or config.n_estimators,
+        "learning_rate": config.learning_rate,
+        "max_depth": config.max_depth,
+        "num_leaves": config.num_leaves,
+        "subsample": config.subsample,
+        "colsample_bytree": config.colsample_bytree,
+        "min_child_samples": config.min_child_samples,
+        "reg_alpha": config.reg_alpha,
+        "reg_lambda": config.reg_lambda,
+        "random_state": config.seed,
+        "objective": config.objective,
+        "metric": "rmse",
+        "verbose": -1,
+    }
+    if config.objective in {"quantile", "huber"}:
+        model_kwargs["alpha"] = config.objective_alpha
+    return LGBMRegressor(**model_kwargs)
 
 
 def evaluate_rmse(y_true: pd.Series, y_pred: np.ndarray) -> float:
@@ -264,7 +269,24 @@ def append_results_log(row: dict[str, object]) -> Path:
 
 
 def get_feature_names(preprocessor: ColumnTransformer) -> list[str]:
-    return preprocessor.get_feature_names_out().tolist()
+    if hasattr(preprocessor, "get_feature_names_out"):
+        try:
+            names = preprocessor.get_feature_names_out()
+            return [str(name).split("__", 1)[-1] for name in names]
+        except Exception:
+            pass
+
+    names: list[str] = []
+    for _, transformer, columns in getattr(preprocessor, "transformers_", []):
+        if transformer == "drop":
+            continue
+        if columns in ("remainder", None):
+            continue
+        if isinstance(columns, (list, tuple)):
+            names.extend(str(column) for column in columns)
+        else:
+            names.append(str(columns))
+    return names
 
 
 def create_experiment_dir(config: ExperimentConfig, timestamp: str) -> Path:
@@ -876,6 +898,40 @@ def add_engineered_features(
                 result["robot_density"] = result["robot_total"] / (result["floor_area_sqm"] + 1.0)
             if {"charger_count", "robot_total"}.issubset(result.columns):
                 result["charger_coverage"] = result["charger_count"] / (result["robot_total"] + 1.0)
+
+        if config.add_delay_risk_features:
+            if {"order_inflow_15m", "urgent_order_ratio", "pack_utilization"}.issubset(result.columns):
+                result["urgent_pack_pressure"] = (
+                    result["order_inflow_15m"] * (1.0 + result["urgent_order_ratio"]) * result["pack_utilization"]
+                )
+            if {"order_inflow_15m", "robot_active", "staff_on_floor", "pack_station_count"}.issubset(result.columns):
+                result["flow_capacity_gap"] = result["order_inflow_15m"] / (
+                    result["robot_active"] + result["staff_on_floor"] + result["pack_station_count"] + 1.0
+                )
+            if {"order_inflow_15m", "avg_items_per_order", "sku_concentration"}.issubset(result.columns):
+                result["complexity_load_index"] = (
+                    result["order_inflow_15m"] * result["avg_items_per_order"] * (1.0 + result["sku_concentration"])
+                )
+            if {"pack_utilization", "loading_dock_util", "outbound_truck_wait_min"}.issubset(result.columns):
+                result["dock_pack_synchronization_risk"] = (
+                    result["pack_utilization"] * result["loading_dock_util"] * (1.0 + result["outbound_truck_wait_min"])
+                )
+            if {"robot_utilization", "low_battery_ratio", "charge_queue_length"}.issubset(result.columns):
+                result["energy_queue_risk"] = (
+                    result["robot_utilization"] * (1.0 + result["low_battery_ratio"]) * (1.0 + result["charge_queue_length"])
+                )
+            if {"congestion_score", "blocked_path_15m", "avg_trip_distance"}.issubset(result.columns):
+                result["movement_friction_risk"] = (
+                    (1.0 + result["congestion_score"]) * (1.0 + result["blocked_path_15m"]) * result["avg_trip_distance"]
+                )
+            if {"storage_density_pct", "vertical_utilization", "racking_height_avg_m"}.issubset(result.columns):
+                result["storage_access_risk"] = (
+                    result["storage_density_pct"] * result["vertical_utilization"] * result["racking_height_avg_m"]
+                )
+            if {"backorder_ratio", "urgent_order_ratio", "order_wave_count"}.issubset(result.columns):
+                result["backlog_urgency_risk"] = (
+                    (1.0 + result["backorder_ratio"]) * (1.0 + result["urgent_order_ratio"]) * result["order_wave_count"]
+                )
 
         return result
 
