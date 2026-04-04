@@ -69,6 +69,7 @@ CONFIG = {
     "add_congestion_features": False,
     "add_layout_interaction_features": False,
     "add_delay_risk_features": False,
+    "delay_risk_feature_set": "base",
     "target_weight_mode": "log",
     "target_weight_strength": 0.2,
     "min_prediction": 0.0,
@@ -80,6 +81,7 @@ CONFIG = {
     "secondary_add_bottleneck_features": True,
     "secondary_add_temporal_features": False,
     "secondary_add_congestion_features": False,
+    "secondary_delay_risk_feature_set": "base",
     "secondary_target_weight_mode": "none",
     "secondary_target_weight_strength": 0.0,
     "secondary_seed": 7,
@@ -136,6 +138,7 @@ class ExperimentConfig:
     add_congestion_features: bool = False
     add_layout_interaction_features: bool = False
     add_delay_risk_features: bool = False
+    delay_risk_feature_set: str = "base"
     target_weight_mode: str = "log"
     target_weight_strength: float = 0.2
     min_prediction: float = 0.0
@@ -147,6 +150,7 @@ class ExperimentConfig:
     secondary_add_bottleneck_features: bool = True
     secondary_add_temporal_features: bool = False
     secondary_add_congestion_features: bool = False
+    secondary_delay_risk_feature_set: str = "base"
     secondary_target_weight_mode: str = "none"
     secondary_target_weight_strength: float = 0.0
     secondary_seed: int = 7
@@ -937,6 +941,60 @@ def add_engineered_features(
                     (1.0 + result["backorder_ratio"]) * (1.0 + result["urgent_order_ratio"]) * result["order_wave_count"]
                 )
 
+            risk_feature_set = str(config.delay_risk_feature_set).strip().lower()
+            add_flow = risk_feature_set in {"plus_flow", "plus_hybrid", "plus_all"}
+            add_queue = risk_feature_set in {"plus_queue", "plus_hybrid", "plus_all"}
+            add_motion = risk_feature_set in {"plus_motion", "plus_hybrid", "plus_all"}
+            add_storage = risk_feature_set in {"plus_storage", "plus_hybrid", "plus_all"}
+
+            if add_flow:
+                if {"order_inflow_15m", "backorder_ratio", "pack_station_count"}.issubset(result.columns):
+                    result["backlog_pressure_per_pack"] = (
+                        result["order_inflow_15m"] * (1.0 + result["backorder_ratio"])
+                    ) / (result["pack_station_count"] + 1.0)
+                if {"order_inflow_15m", "urgent_order_ratio", "backorder_ratio"}.issubset(result.columns):
+                    result["urgent_backlog_mix"] = (
+                        result["order_inflow_15m"] * (1.0 + result["urgent_order_ratio"] + result["backorder_ratio"])
+                    )
+                if {"outbound_truck_wait_min", "loading_dock_util", "order_inflow_15m"}.issubset(result.columns):
+                    result["dock_wait_inflow_ratio"] = (
+                        result["outbound_truck_wait_min"] * (1.0 + result["loading_dock_util"])
+                    ) / (result["order_inflow_15m"] + 1.0)
+
+            if add_queue:
+                if {"robot_utilization", "low_battery_ratio", "charge_queue_length", "order_inflow_15m"}.issubset(result.columns):
+                    result["energy_queue_per_order"] = (
+                        result["robot_utilization"] * (1.0 + result["low_battery_ratio"]) * (1.0 + result["charge_queue_length"])
+                    ) / (result["order_inflow_15m"] + 1.0)
+                if {"label_print_queue", "urgent_order_ratio", "order_inflow_15m"}.issubset(result.columns):
+                    result["label_queue_per_order"] = (
+                        result["label_print_queue"] * (1.0 + result["urgent_order_ratio"])
+                    ) / (result["order_inflow_15m"] + 1.0)
+                if {"charge_queue_length", "robot_active", "low_battery_ratio"}.issubset(result.columns):
+                    result["robot_queue_gap"] = (
+                        result["charge_queue_length"] / (result["robot_active"] + 1.0)
+                    ) * (1.0 + result["low_battery_ratio"])
+
+            if add_motion:
+                if {"congestion_score", "blocked_path_15m", "avg_trip_distance", "order_inflow_15m"}.issubset(result.columns):
+                    result["movement_friction_per_order"] = (
+                        (1.0 + result["congestion_score"]) * (1.0 + result["blocked_path_15m"]) * result["avg_trip_distance"]
+                    ) / (result["order_inflow_15m"] + 1.0)
+                if {"near_collision_15m", "blocked_path_15m", "congestion_score"}.issubset(result.columns):
+                    result["collision_path_risk"] = (
+                        (1.0 + result["near_collision_15m"]) * (1.0 + result["blocked_path_15m"]) * (1.0 + result["congestion_score"])
+                    )
+
+            if add_storage:
+                if {"storage_density_pct", "vertical_utilization", "replenishment_overlap"}.issubset(result.columns):
+                    result["storage_replenishment_risk"] = (
+                        result["storage_density_pct"] * result["vertical_utilization"] * (1.0 + result["replenishment_overlap"])
+                    )
+                if {"unique_sku_15m", "sku_concentration", "storage_density_pct"}.issubset(result.columns):
+                    result["sku_storage_pressure"] = (
+                        result["unique_sku_15m"] * (1.0 + result["sku_concentration"]) * result["storage_density_pct"]
+                    )
+
         return result
 
     return transform(X_train), transform(X_test)
@@ -973,6 +1031,7 @@ def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
             "add_bottleneck_features": config.secondary_add_bottleneck_features,
             "add_temporal_features": config.secondary_add_temporal_features,
             "add_congestion_features": config.secondary_add_congestion_features,
+            "delay_risk_feature_set": config.secondary_delay_risk_feature_set,
             "target_weight_mode": config.secondary_target_weight_mode,
             "target_weight_strength": config.secondary_target_weight_strength,
             "seed": config.secondary_seed,
