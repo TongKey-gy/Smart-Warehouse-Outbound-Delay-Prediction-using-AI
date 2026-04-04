@@ -44,7 +44,6 @@ CONFIG = {
     "experiment_name": "baseline_lightgbm_rmse_v4",
     "validation_type": "group_kfold",
     "group_column": "scenario_id",
-    "use_layout_info": True,
     "use_layout_id": False,
     "use_scenario_id": False,
     "seed": 42,
@@ -89,7 +88,6 @@ class ExperimentConfig:
     experiment_name: str = "baseline_lightgbm_rmse_v4"
     validation_type: str = "group_kfold"
     group_column: str = "scenario_id"
-    use_layout_info: bool = True
     use_layout_id: bool = False
     use_scenario_id: bool = False
     seed: int = 42
@@ -455,7 +453,7 @@ def save_experiment_summary(
     summary_path = experiment_dir / "metrics.json"
     payload = {
         "config": asdict(config),
-        "excluded_feature_columns": list(get_excluded_feature_columns(prepared, config)),
+        "excluded_feature_columns": list(get_excluded_feature_columns(config)),
         "fold_rmse_scores": fold_rmse_scores,
         "fold_mae_scores": fold_mae_scores,
         "best_iterations": best_iterations,
@@ -472,30 +470,20 @@ def get_model_best_iteration(model: LGBMRegressor, config: ExperimentConfig) -> 
     return int(best_iteration)
 
 
-def get_layout_metadata_columns(prepared) -> list[str]:
-    return [
-        column
-        for column in prepared.layout_df.columns
-        if column != "layout_id" and column in prepared.feature_columns
-    ]
-
-
-def get_excluded_feature_columns(prepared, config: ExperimentConfig) -> list[str]:
+def get_excluded_feature_columns(config: ExperimentConfig) -> list[str]:
     excluded_columns = list(BASE_EXCLUDED_FEATURE_COLUMNS)
-    if not config.use_layout_info:
-        excluded_columns.extend(get_layout_metadata_columns(prepared))
     if not config.use_layout_id:
         excluded_columns.append("layout_id")
     if not config.use_scenario_id:
         excluded_columns.append("scenario_id")
-    return list(dict.fromkeys(excluded_columns))
+    return excluded_columns
 
 
 def select_training_view(
     prepared,
     config: ExperimentConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str]]:
-    excluded_feature_columns = get_excluded_feature_columns(prepared, config)
+    excluded_feature_columns = get_excluded_feature_columns(config)
     selected_columns = [
         column for column in prepared.feature_columns if column not in excluded_feature_columns
     ]

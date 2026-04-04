@@ -66,7 +66,6 @@ open/
 - 베이스라인 모델 학습
 - 교차검증 수행 및 fold별 `MAE`, `RMSE` 출력
 - 전체 `OOF MAE` 중심 score 집계
-- `layout_info.csv` 메타데이터 사용 여부 ablation 가능
 - submission 파일 생성
 - `outputs/submissions_local/submission_xx.csv` 복사본 생성
 - `logs/results.csv`에 실험 결과 기록
@@ -116,7 +115,7 @@ python train.py
 
 - `layout_id` 기준으로 layout 메타데이터 병합
 - 타깃은 `train`에는 있고 `test`에는 없는 컬럼 중 자동 탐지
-- `CONFIG`에서 `validation_type`, `group_column`, `use_layout_info`, `use_layout_id`, `use_scenario_id`, seed, LightGBM 하이퍼파라미터를 직접 제어
+- `CONFIG`에서 `validation_type`, `group_column`, `use_layout_id`, `use_scenario_id`, seed, LightGBM 하이퍼파라미터를 직접 제어
 - `CONFIG`에서 간단한 feature engineering 토글을 켜고 끌 수 있음
 - 범주형 컬럼은 ordinal encoding
 - 수치형 컬럼은 median imputation
@@ -150,8 +149,6 @@ python train.py
 | 21 | submission_21.csv | submission_exp08_kfold_workload_features_20260404_023837.csv | 2026-04-04 02:38:37 | exp08_kfold_workload_features | 8.711440 | kfold plus workload engineered features and layout_id |
 | 22 | submission_22.csv | submission_exp09_kfold_env_workload_20260404_023942.csv | 2026-04-04 02:39:42 | exp09_kfold_env_workload | 8.714634 | kfold plus environment and workload features |
 | 23 | submission_23.csv | submission_exp10_kfold_logtarget_combo_20260404_024046.csv | 2026-04-04 02:40:46 | exp10_kfold_logtarget_combo | 8.201912 | kfold with log target and workload features |
-| 24 | submission_24.csv | submission_exp11_kfold_tuned_no_layoutinfo_20260404_094941.csv | 2026-04-04 09:49:41 | exp11_kfold_tuned_no_layoutinfo | 9.187121 | kfold tuned trees without layout_info metadata |
-| 25 | submission_25.csv | submission_exp12_kfold_tuned_with_layoutinfo_20260404_095122.csv | 2026-04-04 09:51:22 | exp12_kfold_tuned_with_layoutinfo | 7.909776 | kfold tuned trees with layout_info metadata restored |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
