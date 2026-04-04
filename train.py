@@ -41,24 +41,24 @@ BASE_EXCLUDED_FEATURE_COLUMNS = (
     "task_reassign_15m",
 )
 CONFIG = {
-    "experiment_name": "baseline_lightgbm_rmse_v4",
-    "validation_type": "group_kfold",
+    "experiment_name": "default_kfold_tuned_log_layoutid_v1",
+    "validation_type": "kfold",
     "group_column": "scenario_id",
     "use_layout_info": True,
-    "use_layout_id": False,
+    "use_layout_id": True,
     "use_scenario_id": False,
     "seed": 42,
     "n_splits": 5,
-    "n_estimators": 800,
+    "n_estimators": 700,
     "learning_rate": 0.03,
-    "num_leaves": 63,
-    "max_depth": 7,
-    "min_child_samples": 20,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "reg_alpha": 0.1,
-    "reg_lambda": 0.1,
-    "use_log_target": False,
+    "num_leaves": 127,
+    "max_depth": 10,
+    "min_child_samples": 30,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "reg_alpha": 0.05,
+    "reg_lambda": 0.05,
+    "use_log_target": True,
     "add_robot_balance_features": False,
     "add_environment_features": False,
     "add_workload_features": False,
@@ -86,24 +86,24 @@ ORIGINAL_SUBMISSION_PATTERN = re.compile(r"^(submission_.+?)_(\d{8}_\d{6})\.csv$
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    experiment_name: str = "baseline_lightgbm_rmse_v4"
-    validation_type: str = "group_kfold"
+    experiment_name: str = "default_kfold_tuned_log_layoutid_v1"
+    validation_type: str = "kfold"
     group_column: str = "scenario_id"
     use_layout_info: bool = True
-    use_layout_id: bool = False
+    use_layout_id: bool = True
     use_scenario_id: bool = False
     seed: int = 42
     n_splits: int = 5
-    n_estimators: int = 800
+    n_estimators: int = 700
     learning_rate: float = 0.03
-    num_leaves: int = 63
-    max_depth: int = 7
-    min_child_samples: int = 20
-    subsample: float = 0.8
-    colsample_bytree: float = 0.8
-    reg_alpha: float = 0.1
-    reg_lambda: float = 0.1
-    use_log_target: bool = False
+    num_leaves: int = 127
+    max_depth: int = 10
+    min_child_samples: int = 30
+    subsample: float = 0.9
+    colsample_bytree: float = 0.9
+    reg_alpha: float = 0.05
+    reg_lambda: float = 0.05
+    use_log_target: bool = True
     add_robot_balance_features: bool = False
     add_environment_features: bool = False
     add_workload_features: bool = False

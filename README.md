@@ -112,6 +112,8 @@ python train.py
 
 기본 Google Drive 링크를 바꾸고 싶으면 `OPEN_DATA_URL` 환경변수를 사용할 수 있습니다.
 
+현재 `train.py` 기본 설정은 `layout_info`를 유지한 `kfold + tuned trees + layout_id + log target` 조합입니다.
+
 ## 베이스라인 동작 요약
 
 - `layout_id` 기준으로 layout 메타데이터 병합
@@ -152,6 +154,8 @@ python train.py
 | 23 | submission_23.csv | submission_exp10_kfold_logtarget_combo_20260404_024046.csv | 2026-04-04 02:40:46 | exp10_kfold_logtarget_combo | 8.201912 | kfold with log target and workload features |
 | 24 | submission_24.csv | submission_exp11_kfold_tuned_no_layoutinfo_20260404_094941.csv | 2026-04-04 09:49:41 | exp11_kfold_tuned_no_layoutinfo | 9.187121 | kfold tuned trees without layout_info metadata |
 | 25 | submission_25.csv | submission_exp12_kfold_tuned_with_layoutinfo_20260404_095122.csv | 2026-04-04 09:51:22 | exp12_kfold_tuned_with_layoutinfo | 7.909776 | kfold tuned trees with layout_info metadata restored |
+| 26 | submission_26.csv | submission_exp13_kfold_tuned_log_layoutid_20260404_111006.csv | 2026-04-04 11:10:06 | exp13_kfold_tuned_log_layoutid | 7.783874 | tuned trees with layout_info, layout_id, and log target |
+| 27 | submission_27.csv | submission_exp14_kfold_tuned_log_workload_layoutid_20260404_111211.csv | 2026-04-04 11:12:11 | exp14_kfold_tuned_log_workload_layoutid | 7.794796 | tuned trees plus workload features, layout_info, layout_id, and log target |
 <!-- EXPERIMENT_LOG_END -->
 
 ## 비고
