@@ -766,3 +766,14 @@
 | Result | OOF MAE 9.120201 |
 | Conclusion | 이전 실험 대비 MAE 변화가 -0.000945로 작아, 영향은 제한적이지만 후속 미세 조정 여지는 남았다. |
 | Next Step | 블렌드 비중이나 보조 모델 설정을 근처 값으로 조정해 추가 개선 가능성을 탐색한다. |
+
+## Experiment 224 — - | blend_secondary_model weight=0.35 secondary_use_layout_id=True secondary_target_weight_mode=none
+
+| 항목 | 내용 |
+|---|---|
+| Objective | - | blend_secondary_model weight=0.35 secondary_use_layout_id=True secondary_target_weight_mode=none를 검증해 교차검증 점수를 개선하는 것이 목적이었다. |
+| Change | validation: group k-fold on `scenario_id`. features: bottleneck, capacity, notebook port. layout_id: disabled. target: log1p. weighting: log x 0.2. blend: secondary model (weight=0.35, layout_id=True, weighting=none). hyperparameters: learning_rate=0.025, n_estimators=1100, num_leaves=127, max_depth=11, min_child_samples=20. |
+| Hypothesis | 가설은 타깃 분포의 긴 꼬리를 완화해 MAE를 안정화할 수 있다; bottleneck, capacity, notebook port 피처가 운영 병목을 더 직접적으로 설명할 수 있다; 고지연 샘플에 더 많은 학습 비중을 주면 tail 오차를 줄일 수 있다; 편향이 다른 보조 모델을 섞으면 fold 분산을 줄일 수 있다는 점이었다. |
+| Result | OOF MAE 9.113586 |
+| Conclusion | 이전 실험 대비 MAE 변화가 -0.006615로 작아, 영향은 제한적이지만 후속 미세 조정 여지는 남았다. |
+| Next Step | 블렌드 비중이나 보조 모델 설정을 근처 값으로 조정해 추가 개선 가능성을 탐색한다. |

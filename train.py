@@ -40,6 +40,14 @@ BASE_EXCLUDED_FEATURE_COLUMNS = (
     "replenishment_overlap",
     "task_reassign_15m",
 )
+
+
+def safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    denominator_safe = denominator.astype(float).replace(0.0, np.nan)
+    result = numerator.astype(float) / denominator_safe
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
 CONFIG = {
     "experiment_name": "default_groupkfold_bottleneck_blend_v1",
     "validation_type": "group_kfold",
@@ -87,6 +95,13 @@ CONFIG = {
     "secondary_target_weight_mode": "none",
     "secondary_target_weight_strength": 0.0,
     "secondary_seed": 7,
+    "report_hybrid_layout_cv": False,
+    "hybrid_seen_folds": 5,
+    "hybrid_unseen_folds": 5,
+    "hybrid_seen_weight": 0.6,
+    "hybrid_unseen_weight": 0.4,
+    "add_notebook_port_features": False,
+    "notebook_port_feature_set": "all",
     "early_stopping_rounds": 30,
     "log_evaluation_period": 100,
 }
@@ -158,6 +173,13 @@ class ExperimentConfig:
     secondary_target_weight_mode: str = "none"
     secondary_target_weight_strength: float = 0.0
     secondary_seed: int = 7
+    report_hybrid_layout_cv: bool = False
+    hybrid_seen_folds: int = 5
+    hybrid_unseen_folds: int = 5
+    hybrid_seen_weight: float = 0.6
+    hybrid_unseen_weight: float = 0.4
+    add_notebook_port_features: bool = False
+    notebook_port_feature_set: str = "all"
     early_stopping_rounds: int = 30
     log_evaluation_period: int = 100
 
@@ -899,6 +921,39 @@ def add_engineered_features(
                     result["manual_override_ratio"] * result["congestion_score"]
                 )
 
+        if config.add_notebook_port_features:
+            feature_set = str(config.notebook_port_feature_set).strip().lower()
+            use_battery = feature_set in {"all", "core", "interaction_light", "battery"}
+            use_flow = feature_set in {"all", "core", "interaction_light", "flow"}
+            use_mass = feature_set in {"all", "core", "mass"}
+
+            if use_battery and {"robot_charging", "charge_queue_length", "charger_count"}.issubset(result.columns):
+                result["charge_pressure"] = safe_divide(
+                    result["robot_charging"] + result["charge_queue_length"],
+                    result["charger_count"] + 1.0,
+                )
+            if use_battery and {"charge_queue_length", "avg_charge_wait"}.issubset(result.columns):
+                result["queue_wait_pressure"] = result["charge_queue_length"] * result["avg_charge_wait"]
+            if use_battery and {"congestion_score", "low_battery_ratio"}.issubset(result.columns):
+                result["congestion_x_lowbat"] = result["congestion_score"] * result["low_battery_ratio"]
+            if use_battery and {"charge_pressure", "congestion_score"}.issubset(result.columns):
+                result["charge_pressure_x_congestion"] = result["charge_pressure"] * result["congestion_score"]
+            if use_flow and {"order_inflow_15m", "unique_sku_15m"}.issubset(result.columns):
+                result["complexity_load"] = result["order_inflow_15m"] * result["unique_sku_15m"]
+            if use_flow and {"complexity_load", "pack_station_count"}.issubset(result.columns):
+                result["complexity_load_per_pack"] = safe_divide(
+                    result["complexity_load"],
+                    result["pack_station_count"] + 1.0,
+                )
+            if use_mass and {"order_inflow_15m", "avg_package_weight_kg"}.issubset(result.columns):
+                result["demand_mass"] = result["order_inflow_15m"] * result["avg_package_weight_kg"]
+            if use_mass and {"demand_mass", "robot_total"}.issubset(result.columns):
+                result["demand_mass_per_robot"] = safe_divide(result["demand_mass"], result["robot_total"] + 1.0)
+            if use_flow and {"order_inflow_15m", "avg_trip_distance"}.issubset(result.columns):
+                result["trip_load"] = result["order_inflow_15m"] * result["avg_trip_distance"]
+            if use_flow and {"trip_load", "robot_total"}.issubset(result.columns):
+                result["trip_load_per_robot"] = safe_divide(result["trip_load"], result["robot_total"] + 1.0)
+
         if config.add_layout_interaction_features:
             if {"avg_trip_distance", "layout_compactness"}.issubset(result.columns):
                 result["trip_distance_layout_penalty"] = (
@@ -1073,6 +1128,83 @@ def build_sample_weights(target: pd.Series, config: ExperimentConfig) -> np.ndar
     return weights
 
 
+def make_seen_layout_split_indices(prepared, config: ExperimentConfig) -> list[tuple[pd.Index, pd.Index]]:
+    train_df = prepared.train_df.loc[prepared.X_train.index]
+    if not {"layout_id", "scenario_id"}.issubset(train_df.columns) or "layout_id" not in prepared.test_df.columns:
+        return []
+
+    shared_layouts = sorted(set(train_df["layout_id"].dropna().unique()) & set(prepared.test_df["layout_id"].dropna().unique()))
+    if not shared_layouts:
+        return []
+
+    shared = train_df[train_df["layout_id"].isin(shared_layouts)][["layout_id", "scenario_id"]].drop_duplicates()
+    if shared.empty:
+        return []
+
+    n_splits = min(int(config.hybrid_seen_folds), int(shared["scenario_id"].nunique()))
+    if n_splits < 2:
+        return []
+
+    rng = np.random.default_rng(config.seed)
+    fold_by_scenario: dict[object, int] = {}
+    for _, group in shared.groupby("layout_id", sort=True):
+        scenarios = group["scenario_id"].dropna().tolist()
+        rng.shuffle(scenarios)
+        for idx, scenario_id in enumerate(scenarios):
+            fold_by_scenario[scenario_id] = idx % n_splits
+
+    splits: list[tuple[pd.Index, pd.Index]] = []
+    for fold_id in range(n_splits):
+        valid_mask = train_df["scenario_id"].map(fold_by_scenario).eq(fold_id).fillna(False)
+        if valid_mask.any() and (~valid_mask).any():
+            splits.append((train_df.index[~valid_mask], train_df.index[valid_mask]))
+    return splits
+
+
+def make_unseen_layout_split_indices(prepared, config: ExperimentConfig) -> list[tuple[pd.Index, pd.Index]]:
+    train_df = prepared.train_df.loc[prepared.X_train.index]
+    if "layout_id" not in train_df.columns:
+        return []
+
+    layout_stats = (
+        train_df.groupby("layout_id", dropna=False)[prepared.target_column]
+        .mean()
+        .rename("layout_target_mean")
+        .reset_index()
+    )
+    if layout_stats.empty:
+        return []
+
+    n_splits = min(int(config.hybrid_unseen_folds), len(layout_stats))
+    if n_splits < 2:
+        return []
+
+    try:
+        layout_stats["bin"] = pd.qcut(
+            layout_stats["layout_target_mean"].rank(method="first"),
+            q=min(n_splits, len(layout_stats)),
+            labels=False,
+            duplicates="drop",
+        )
+    except ValueError:
+        layout_stats["bin"] = 0
+
+    rng = np.random.default_rng(config.seed)
+    fold_by_layout: dict[object, int] = {}
+    for _, group in layout_stats.groupby("bin", dropna=False):
+        layouts = group["layout_id"].tolist()
+        rng.shuffle(layouts)
+        for idx, layout_id in enumerate(layouts):
+            fold_by_layout[layout_id] = idx % n_splits
+
+    splits: list[tuple[pd.Index, pd.Index]] = []
+    for fold_id in range(n_splits):
+        valid_mask = train_df["layout_id"].map(fold_by_layout).eq(fold_id)
+        if valid_mask.any() and (~valid_mask).any():
+            splits.append((train_df.index[~valid_mask], train_df.index[valid_mask]))
+    return splits
+
+
 def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
     return ExperimentConfig(
         **{
@@ -1091,15 +1223,15 @@ def make_secondary_config(config: ExperimentConfig) -> ExperimentConfig:
     )
 
 
-def train_single_model(
+def run_model_oof_with_splits(
     prepared,
     config: ExperimentConfig,
-) -> tuple[pd.Series, np.ndarray, list[float], list[float], list[pd.DataFrame], list[int], list[str], list[str]]:
+    split_indices: list[tuple[pd.Index, pd.Index]],
+) -> tuple[pd.Series, list[float], list[float], list[pd.DataFrame], list[int], list[str], list[str]]:
     X_train, X_test, numeric_columns, categorical_columns, _ = select_training_view(prepared, config)
-    X_train, X_test = add_engineered_features(X_train, X_test, config)
+    X_train, _ = add_engineered_features(X_train, X_test.iloc[0:0].copy(), config)
     numeric_columns = X_train.select_dtypes(include=["number"]).columns.tolist()
     categorical_columns = [column for column in X_train.columns if column not in numeric_columns]
-    _, _, split_iterator = iter_train_cv_splits(prepared, config)
     train_target = np.log1p(prepared.y) if config.use_log_target else prepared.y.copy()
     sample_weights = build_sample_weights(prepared.y, config)
 
@@ -1109,7 +1241,7 @@ def train_single_model(
     fold_importances: list[pd.DataFrame] = []
     best_iterations: list[int] = []
 
-    for fold_idx, train_idx, valid_idx in split_iterator:
+    for fold_idx, (train_idx, valid_idx) in enumerate(split_indices, start=1):
         X_fold_train = X_train.loc[train_idx]
         y_fold_train = train_target.loc[train_idx]
         X_fold_valid = X_train.loc[valid_idx]
@@ -1157,6 +1289,39 @@ def train_single_model(
         )
         print(f"Fold {fold_idx}: MAE={fold_mae:.6f} RMSE={fold_rmse:.6f} BEST_ITER={best_iteration}")
 
+    return (
+        oof_predictions,
+        fold_rmse_scores,
+        fold_mae_scores,
+        fold_importances,
+        best_iterations,
+        X_train.columns.tolist(),
+        [column for column in get_excluded_feature_columns(prepared, config) if column in prepared.feature_columns],
+    )
+
+
+def train_single_model(
+    prepared,
+    config: ExperimentConfig,
+) -> tuple[pd.Series, np.ndarray, list[float], list[float], list[pd.DataFrame], list[int], list[str], list[str]]:
+    X_train, X_test, numeric_columns, categorical_columns, _ = select_training_view(prepared, config)
+    X_train, X_test = add_engineered_features(X_train, X_test, config)
+    numeric_columns = X_train.select_dtypes(include=["number"]).columns.tolist()
+    categorical_columns = [column for column in X_train.columns if column not in numeric_columns]
+    _, _, split_iterator = iter_train_cv_splits(prepared, config)
+    split_indices = [(train_idx, valid_idx) for _fold_idx, train_idx, valid_idx in split_iterator]
+    (
+        oof_predictions,
+        fold_rmse_scores,
+        fold_mae_scores,
+        fold_importances,
+        best_iterations,
+        _feature_columns,
+        _excluded_columns,
+    ) = run_model_oof_with_splits(prepared, config, split_indices)
+
+    train_target = np.log1p(prepared.y) if config.use_log_target else prepared.y.copy()
+    sample_weights = build_sample_weights(prepared.y, config)
     final_n_estimators = max(1, int(round(float(np.mean(best_iterations)))))
     final_preprocessor = build_preprocessor(numeric_columns, categorical_columns)
     X_train_processed = final_preprocessor.fit_transform(X_train)
@@ -1178,6 +1343,50 @@ def train_single_model(
         X_train.columns.tolist(),
         [column for column in get_excluded_feature_columns(prepared, config) if column in prepared.feature_columns],
     )
+
+
+def evaluate_hybrid_layout_cv(prepared, config: ExperimentConfig) -> dict[str, float] | None:
+    if not config.report_hybrid_layout_cv:
+        return None
+
+    split_groups = {
+        "seen_layout": make_seen_layout_split_indices(prepared, config),
+        "unseen_layout": make_unseen_layout_split_indices(prepared, config),
+    }
+    metrics: dict[str, float] = {}
+
+    for split_name, split_indices in split_groups.items():
+        if len(split_indices) < 2:
+            continue
+
+        primary_oof, _rmse, _mae, _importance, _best_iter, _features, _excluded = run_model_oof_with_splits(
+            prepared,
+            config,
+            split_indices,
+        )
+        blended_oof = primary_oof.copy()
+        if config.blend_secondary_model:
+            secondary_config = make_secondary_config(config)
+            secondary_oof, _s_rmse, _s_mae, _s_importance, _s_best_iter, _s_features, _s_excluded = run_model_oof_with_splits(
+                prepared,
+                secondary_config,
+                split_indices,
+            )
+            secondary_weight = float(np.clip(config.secondary_weight, 0.0, 1.0))
+            blended_oof = ((1.0 - secondary_weight) * primary_oof) + (secondary_weight * secondary_oof)
+
+        valid_index = blended_oof.dropna().index
+        metrics[f"{split_name}_oof_mae"] = evaluate_mae(prepared.y.loc[valid_index], blended_oof.loc[valid_index])
+        metrics[f"{split_name}_folds"] = float(len(split_indices))
+
+    seen_mae = metrics.get("seen_layout_oof_mae")
+    unseen_mae = metrics.get("unseen_layout_oof_mae")
+    if seen_mae is not None and unseen_mae is not None:
+        metrics["hybrid_layout_score"] = (
+            float(config.hybrid_seen_weight) * float(seen_mae)
+            + float(config.hybrid_unseen_weight) * float(unseen_mae)
+        )
+    return metrics or None
 
 
 def resolve_cv_groups(prepared, config: ExperimentConfig) -> pd.Series | None:
@@ -1293,6 +1502,19 @@ def main() -> None:
         f"OOF_RMSE={oof_rmse:.6f} "
         f"FINAL_N_ESTIMATORS={final_n_estimators}"
     )
+    hybrid_cv_metrics = evaluate_hybrid_layout_cv(prepared, config)
+    if hybrid_cv_metrics is not None:
+        seen_text = hybrid_cv_metrics.get("seen_layout_oof_mae")
+        unseen_text = hybrid_cv_metrics.get("unseen_layout_oof_mae")
+        hybrid_text = hybrid_cv_metrics.get("hybrid_layout_score")
+        message_parts = ["Hybrid Layout CV:"]
+        if seen_text is not None:
+            message_parts.append(f"SEEN_OOF_MAE={seen_text:.6f}")
+        if unseen_text is not None:
+            message_parts.append(f"UNSEEN_OOF_MAE={unseen_text:.6f}")
+        if hybrid_text is not None:
+            message_parts.append(f"HYBRID_SCORE={hybrid_text:.6f}")
+        print(" ".join(message_parts))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = create_experiment_dir(config, timestamp)
@@ -1336,6 +1558,9 @@ def main() -> None:
         "submission_local_path": str(archived_submission_path.relative_to(Path.cwd())),
         "experiment_dir": str(experiment_dir.relative_to(Path.cwd())),
     }
+    if hybrid_cv_metrics is not None:
+        for key, value in hybrid_cv_metrics.items():
+            results_row[key] = value
     summary_path = save_experiment_summary(
         prepared,
         config,
